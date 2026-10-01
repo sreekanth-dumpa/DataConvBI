@@ -41,7 +41,7 @@ If an output fails either check, the runner falls back to the offline engine and
 leaves an invocation receipt with prompt, context and response hashes, plus a trace span. The UI's
 **Agent skills** tab shows the catalog, prompts, schemas and receipts, and runs a proposal-stability check.
 
-See `docs/SPEC_COVERAGE.md` for a section-by-section map of the spec to code, tests and status.
+See `docs/MODULES.md` for a reference to every module and component, and `docs/SPEC_COVERAGE.md` for a section-by-section map of the spec to code, tests and status.
 
 The central invariant: the same confirmed meaning, bound parameters, source
 cut, access decision and recipe versions produce equivalent information across
