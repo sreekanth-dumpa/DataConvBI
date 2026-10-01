@@ -1,0 +1,13 @@
+{
+  "registry_version": "metric-templates/2026-10-01.1",
+  "templates": {
+    "event_conversion_rate": {
+      "description": "Share of a population of entities that experience a qualifying event within a window.",
+      "obligations": ["ob.identity", "ob.linkage", "ob.attribution", "ob.maturity", "ob.timezone_window", "ob.event_definition", "ob.cancellation", "ob.authority", "ob.access", "ob.aggregation"]
+    },
+    "__unresolved__": {
+      "description": "Metric type not yet classified. Classification and definition resolution are mandatory.",
+      "obligations": ["ob.metric_classification", "ob.definition_resolution", "ob.authority", "ob.access"]
+    }
+  }
+}

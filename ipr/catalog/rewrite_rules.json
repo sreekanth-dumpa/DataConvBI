@@ -1,0 +1,15 @@
+{
+  "registry_version": "rewrite-rules/2026-10-01.1",
+  "rules": {
+    "rw.fuse_staged_v1": {"evidence_class": "certified_rule", "description": "Staged CTAS chain and fused CTE statement compute the same bag at each boundary (materialization does not change bag semantics).",
+                          "preconditions": ["stages_preserve_columns", "no_nondeterministic_operators"]},
+    "rw.semijoin_key_reduction_v1": {"evidence_class": "certified_rule", "description": "Restricting events to cohort keys before an EXISTS window reduction is exact because the reduction is an inner/exists region.",
+                                     "preconditions": ["consumer_is_exists_or_inner", "no_outer_preserved_side_on_events"]},
+    "rw.copartition_window_reduction_v1": {"evidence_class": "certified_rule", "description": "Window reduction per partition after co-partitioning cohort and events by the same normalized opportunity key, hash version and N, followed by additive merge, equals the unpartitioned reduction.",
+                                           "preconditions": ["partition_key_equals_reduction_key", "same_hash_version_and_n", "additive_sufficient_statistics", "events_resolved_to_canonical_key"]},
+    "rw.combine_partitions_v1": {"evidence_class": "certified_rule", "description": "Changing N for an unstarted partitioned suffix preserves results under rw.copartition_window_reduction_v1.",
+                                 "preconditions": ["partition_key_equals_reduction_key", "additive_sufficient_statistics"]},
+    "rw.derived_rollup_sum_v1": {"evidence_class": "certified_rule", "description": "A coarser output grain is obtained by summing additive counts over removed dimensions and recomputing ratios.",
+                                 "preconditions": ["requested_dimensions_subset", "additive_sufficient_statistics", "same_coverage_key"]}
+  }
+}

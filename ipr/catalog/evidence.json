@@ -1,0 +1,21 @@
+{
+  "registry_version": "evidence/2026-10-01.1",
+  "note": "The POC installs five evidence fragments rather than a live enterprise discovery service.",
+  "fragments": [
+    {"claim_id": "clm.quote_identity", "packet": "P04", "packets": ["P04", "P10", "P12"], "claim": "A submission opportunity is counted once across PolicyPeriod branches and job versions; dimensions are attributed to the first eligible quoted branch ordered by quote_generated_at, job_version, quote_branch_id (certified_first_quote_order_v2).",
+     "authority": "certified_business_rule", "version": "2", "source_locator": "recipes/gross_submission_quote_conversion/2.0.0#identity", "scope": {"lob": ["personal_auto"], "domains": ["quote"]},
+     "valid_from": "2026-01-01T00:00:00Z", "valid_to": null, "satisfies": ["ob.identity", "ob.attribution", "ob.tie_break_certified"], "visibility": "internal", "contradictions": []},
+    {"claim_id": "clm.bind_linkage", "packet": "P12", "packets": ["P12", "P04"], "claim": "Bind events carry quote_branch_id; each branch maps to exactly one submission_opportunity_id in the quote product's published linkage.",
+     "authority": "product_contract", "version": "2", "source_locator": "products/policy_fdp/known_bind_events_v2#linkage", "scope": {"lob": ["personal_auto"], "domains": ["quote", "policy"]},
+     "valid_from": "2026-01-01T00:00:00Z", "valid_to": null, "satisfies": ["ob.linkage"], "visibility": "internal", "contradictions": []},
+    {"claim_id": "clm.bind_definition", "packet": "P08", "packets": ["P08", "P10", "P19"], "claim": "A bind counts when bind_status = 'committed'. Withdrawn binds never count. Later cancellation does not reverse gross conversion.",
+     "authority": "certified_business_rule", "version": "2", "source_locator": "recipes/gross_submission_quote_conversion/2.0.0#bind", "scope": {"lob": ["personal_auto"], "domains": ["policy"]},
+     "valid_from": "2026-01-01T00:00:00Z", "valid_to": null, "satisfies": ["ob.event_definition", "ob.cancellation"], "visibility": "internal", "contradictions": []},
+    {"claim_id": "clm.temporal_window", "packet": "P07", "packets": ["P07", "P10"], "claim": "Window is anchored at the first eligible quote; [anchor, anchor + N local calendar days) in the business timezone; opportunities whose window end is after the knowledge cutoff are immature and excluded from the denominator but reported.",
+     "authority": "certified_business_rule", "version": "2", "source_locator": "recipes/gross_submission_quote_conversion/2.0.0#window", "scope": {"lob": ["personal_auto"], "domains": ["quote", "policy"]},
+     "valid_from": "2026-01-01T00:00:00Z", "valid_to": null, "satisfies": ["ob.timezone_window", "ob.maturity"], "visibility": "internal", "contradictions": []},
+    {"claim_id": "clm.analytical_algebra", "packet": "P11", "packets": ["P11"], "claim": "Persist numerator and denominator counts; rates are recomputed from summed counts; subgroup rates are never averaged.",
+     "authority": "certified_business_rule", "version": "1", "source_locator": "recipes/common/sufficient_statistics#conversion", "scope": {"domains": ["quote", "policy"]},
+     "valid_from": "2026-01-01T00:00:00Z", "valid_to": null, "satisfies": ["ob.aggregation", "ob.additive_algebra"], "visibility": "internal", "contradictions": []}
+  ]
+}

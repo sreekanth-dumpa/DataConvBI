@@ -1,0 +1,120 @@
+{
+  "registry_version": "recipes/2026-10-01.1",
+  "recipes": [
+    {
+      "id": "gross_submission_quote_conversion",
+      "version": "2.0.0",
+      "binding_version": "2",
+      "owner": "pricing_analytics",
+      "status": "certified",
+      "certification": {
+        "certificate_ref": "cert/gross_submission_quote_conversion/2.0.0/fixture",
+        "scope": "synthetic POC fixture with independently hand-labeled edge cases; not an enterprise Guidewire certification",
+        "evidence": ["oracle:tests/test_oracle.py", "labels:ipr/fixture.py:EDGE_LABELS"]
+      },
+      "metric_type": "event_conversion_rate",
+      "title": "Gross submission quote conversion",
+      "description": "Share of first eligible quoted personal auto submission opportunities that reach a first committed bind on any linked submission branch within a local calendar-day window anchored at the first eligible quote. Later cancellation does not reverse conversion. Only opportunities with a complete window as of the knowledge cutoff are in the denominator.",
+      "intent_aliases": ["quote conversion", "quote to bind", "quote-to-bind", "conversion rate", "bind rate", "submission conversion", "close rate"],
+      "patterns": ["(?i)\\b(quote|submission)s?\\b.*\\b(convert|conversion|bind|bound)", "(?i)\\b(conversion|bind) rate\\b"],
+      "domains": ["quote", "policy"],
+      "applicability": {
+        "lob": ["personal_auto"],
+        "state": ["NC", "SC", "VA"],
+        "window_value": {"min": 1, "max": 90},
+        "window_unit": ["local_calendar_day"],
+        "business_timezone": ["America/New_York"]
+      },
+      "allowed_dimensions": ["product_version", "channel"],
+      "definitions": {
+        "population": "first_eligible_quoted_submission_opportunity",
+        "quote_identity": {
+          "grain": "quote_opportunity_id",
+          "business_unit": "submission_opportunity",
+          "source_binding_id": "guidewire_submission_opportunity_v2",
+          "multi_version_policy": "count_once_across_branches"
+        },
+        "attribution_rule": {"basis": "first_eligible_quoted_branch", "tie_break_rule_id": "certified_first_quote_order_v2"},
+        "bind_definition": "first_committed_bind_on_any_linked_submission_branch",
+        "cancellation_treatment": "gross_conversion_not_reversed_by_later_cancellation",
+        "business_timezone": "America/New_York",
+        "window": {"unit": "local_calendar_day", "interval": "[start,end)", "anchor": "first_eligible_quote_generated_at",
+                   "end_rule": "same_local_time_plus_n_calendar_days", "dst_rule_id": "domain_calendar_v1"},
+        "time_basis": "first_eligible_quote_generated_at",
+        "maturity_policy": "exclude_without_complete_window"
+      },
+      "algebra": {
+        "identity": "submission",
+        "timezone": "America/New_York",
+        "window_kind": "half_open_local_days",
+        "cohort_date_basis": "local"
+      },
+      "input_ports": ["quote_fdp/quoted_opportunities_v2", "policy_fdp/known_bind_events_v2"],
+      "cross_product_consistency": "each_publication_covers_cutoff",
+      "operators": ["scoped_scan", "canonical_event_selection", "key_reduction", "window_exists", "aggregate_sufficient_stats", "partition_hash", "union_disjoint_partitions", "assert"],
+      "obligations": ["ob.identity", "ob.linkage", "ob.attribution", "ob.maturity", "ob.timezone_window", "ob.event_definition", "ob.cancellation", "ob.authority", "ob.access", "ob.aggregation"],
+      "sufficient_statistics": {"eligible_all": "count", "eligible_mature": "count", "immature": "count", "quality_excluded": "count", "converted": "count",
+                                "conversion_rate": "sum_converted_over_sum_eligible_mature"},
+      "determinism": "deterministic_exact",
+      "evidence_claims": ["clm.quote_identity", "clm.bind_linkage", "clm.bind_definition", "clm.temporal_window", "clm.analytical_algebra"],
+      "performance_envelope": {"cohort_rows": [100, 50000000], "bind_rows_per_opportunity_p95": 4},
+      "feedback_dependencies": []
+    },
+    {
+      "id": "quote_conversion",
+      "version": "1.0.0",
+      "binding_version": "1",
+      "owner": "pricing_analytics",
+      "status": "deprecated_supported",
+      "superseded_by": {"id": "gross_submission_quote_conversion", "version": "2.0.0"},
+      "certification": {
+        "certificate_ref": "cert/quote_conversion/1.0.0/fixture-legacy",
+        "scope": "legacy bounded algebra: UTC dates, inclusive day window, each quote branch counted independently",
+        "evidence": ["oracle:tests/test_oracle.py"]
+      },
+      "metric_type": "event_conversion_rate",
+      "title": "Legacy per-quote conversion (UTC, inclusive window)",
+      "description": "Legacy definition: every eligible quoted branch is an opportunity; cohort by UTC quote date; a bind on the same branch whose UTC date is within N days inclusive converts it.",
+      "intent_aliases": ["legacy quote conversion", "per quote conversion", "per-branch conversion", "legacy conversion"],
+      "patterns": ["(?i)\\blegacy\\b.*\\bconversion"],
+      "domains": ["quote", "policy"],
+      "applicability": {
+        "lob": ["personal_auto"],
+        "state": ["NC", "SC", "VA"],
+        "window_value": {"min": 1, "max": 90},
+        "window_unit": ["utc_date_inclusive"],
+        "business_timezone": ["UTC"]
+      },
+      "allowed_dimensions": ["product_version", "channel"],
+      "definitions": {
+        "population": "eligible_quoted_branch",
+        "quote_identity": {"grain": "quote_branch_id", "business_unit": "policy_period_branch",
+                           "source_binding_id": "guidewire_policy_period_v1", "multi_version_policy": "count_each_branch"},
+        "attribution_rule": {"basis": "own_branch", "tie_break_rule_id": null},
+        "bind_definition": "committed_bind_on_same_branch",
+        "cancellation_treatment": "gross_conversion_not_reversed_by_later_cancellation",
+        "business_timezone": "UTC",
+        "window": {"unit": "utc_date_inclusive", "interval": "[date,date+n]", "anchor": "quote_generated_at",
+                   "end_rule": "utc_date_plus_n_inclusive", "dst_rule_id": null},
+        "time_basis": "quote_generated_at",
+        "maturity_policy": "exclude_without_complete_window"
+      },
+      "algebra": {
+        "identity": "branch",
+        "timezone": "UTC",
+        "window_kind": "inclusive_utc_dates",
+        "cohort_date_basis": "utc"
+      },
+      "input_ports": ["quote_fdp/quoted_opportunities_v2", "policy_fdp/known_bind_events_v2"],
+      "cross_product_consistency": "each_publication_covers_cutoff",
+      "operators": ["scoped_scan", "canonical_event_selection", "key_reduction", "window_exists", "aggregate_sufficient_stats", "partition_hash", "union_disjoint_partitions", "assert"],
+      "obligations": ["ob.identity", "ob.linkage", "ob.attribution", "ob.maturity", "ob.timezone_window", "ob.event_definition", "ob.cancellation", "ob.authority", "ob.access", "ob.aggregation"],
+      "sufficient_statistics": {"eligible_all": "count", "eligible_mature": "count", "immature": "count", "quality_excluded": "count", "converted": "count",
+                                "conversion_rate": "sum_converted_over_sum_eligible_mature"},
+      "determinism": "deterministic_exact",
+      "evidence_claims": ["clm.quote_identity", "clm.bind_linkage", "clm.bind_definition", "clm.temporal_window", "clm.analytical_algebra"],
+      "performance_envelope": {"cohort_rows": [100, 50000000], "bind_rows_per_opportunity_p95": 4},
+      "feedback_dependencies": []
+    }
+  ]
+}

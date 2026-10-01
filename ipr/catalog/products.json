@@ -1,0 +1,46 @@
+{
+  "registry_version": "products/2026-10-01.1",
+  "products": {
+    "quote_fdp": {
+      "owner": "quote_data_product_team",
+      "authority": "authoritative",
+      "lob": ["personal_auto", "homeowners"],
+      "ports": {
+        "quoted_opportunities_v2": {
+          "contract_version": "2",
+          "grain": ["quote_branch_id"],
+          "base_relation": "quote_branches",
+          "snapshot_adapter": "publication_seq",
+          "replay_retention_hours": 24,
+          "columns": {
+            "quote_branch_id": "text", "submission_opportunity_id": "text", "job_version": "int", "state": "text", "lob": "text",
+            "product_version": "text", "channel": "text", "quote_status": "text", "quality_flag": "text", "quote_generated_at": "timestamp_utc",
+            "knowledge_at": "timestamp_utc", "superseded_knowledge_at": "timestamp_utc"
+          },
+          "row_access_policy": "rap_state_by_subject_v3",
+          "statistics": {"rows_per_month_estimate": 5200, "branches_per_submission_mean": 1.6}
+        }
+      }
+    },
+    "policy_fdp": {
+      "owner": "policy_data_product_team",
+      "authority": "authoritative",
+      "lob": ["personal_auto", "homeowners"],
+      "ports": {
+        "known_bind_events_v2": {
+          "contract_version": "2",
+          "grain": ["bind_event_id"],
+          "base_relation": "bind_events",
+          "snapshot_adapter": "publication_seq",
+          "replay_retention_hours": 24,
+          "columns": {
+            "bind_event_id": "text", "quote_branch_id": "text", "bind_status": "text", "bound_at": "timestamp_utc", "cancelled_at": "timestamp_utc",
+            "knowledge_at": "timestamp_utc", "superseded_knowledge_at": "timestamp_utc", "state": "text"
+          },
+          "row_access_policy": "rap_state_by_subject_v3",
+          "statistics": {"rows_per_month_estimate": 2600, "binds_per_opportunity_p95": 2}
+        }
+      }
+    }
+  }
+}

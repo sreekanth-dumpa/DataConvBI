@@ -1,0 +1,26 @@
+{
+  "registry_version": "packets/2026-10-01.1",
+  "tiers": ["data_product", "entity", "attribute"],
+  "families": {
+    "P01": {"name": "Product Identity and Scope", "route_contribution": "Authoritative quote and policy products and LOB coverage"},
+    "P02": {"name": "Metadata and Structural", "route_contribution": "Physical columns, types, views and identifiers"},
+    "P03": {"name": "Data Profiling and Statistical", "route_contribution": "Cardinality, nulls, skew and partition statistics"},
+    "P04": {"name": "Key and Relationship", "route_contribution": "Quote grain and one-to-many bind relationships"},
+    "P05": {"name": "Semantic Understanding", "route_contribution": "Meaning of quote issuance and product version"},
+    "P06": {"name": "Value and Code Semantics", "route_contribution": "State, LOB and channel code crosswalks"},
+    "P07": {"name": "Temporal and Versioning", "route_contribution": "Effective time, knowledge time and snapshot behavior"},
+    "P08": {"name": "Business Event and State", "route_contribution": "Issued, bound, cancelled and reinstated states"},
+    "P09": {"name": "Process and Scenario", "route_contribution": "Quote-to-bind process and scenario exclusions"},
+    "P10": {"name": "Decision and Business Rule", "route_contribution": "Approved counting and attribution rules"},
+    "P11": {"name": "Analytical Semantics", "route_contribution": "Numerator, denominator, units and aggregation algebra"},
+    "P12": {"name": "Crosswalk and Mapping", "route_contribution": "Quote-policy linkage across source applications"},
+    "P13": {"name": "Usage and Query Mining", "route_contribution": "Tested prior routes and observed workload signatures"},
+    "P14": {"name": "Lineage and Transformation", "route_contribution": "Source-to-answer and stage-to-stage provenance"},
+    "P15": {"name": "Governance Quality and Security", "route_contribution": "Access, classification and quality obligations"},
+    "P16": {"name": "Operational", "route_contribution": "Freshness, retention, queues and resource envelopes"},
+    "P17": {"name": "Consumer and Serving", "route_contribution": "Chart dimensions, presentation and output limits"},
+    "P18": {"name": "Evidence and Confidence", "route_contribution": "Claim support, contradictions and certification"},
+    "P19": {"name": "Code and Application Behavior", "route_contribution": "How issuance, bind and cancellation are implemented"},
+    "P20": {"name": "Documentation and External Knowledge", "route_contribution": "Specifications and human-authored corroborating evidence"}
+  }
+}
