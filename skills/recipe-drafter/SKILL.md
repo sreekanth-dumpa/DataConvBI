@@ -1,12 +1,21 @@
 ---
 name: recipe-drafter
-version: 1.0.0
-phase: build_recipe
-effort: medium
-authority: propose_only
-may: ["propose answers to the builder's semantic questions from the user's logic", "mark questions it cannot answer as unresolved"]
-may_not: ["certify a recipe", "write SQL", "guess answers the logic does not support"]
-consumers: ["recipe_builder.RecipeBuilder", "app Recipe builder tab"]
+description: Proposes answers to the recipe builder's six semantic questions from a user's natural-language metric logic, leaving undecided questions unresolved. Use in the Recipe builder tab; drafts are never certified by being generated.
+metadata:
+  version: 1.0.0
+  phase: build_recipe
+  effort: medium
+  authority: propose_only
+  may:
+  - propose answers to the builder's semantic questions from the user's logic
+  - mark questions it cannot answer as unresolved
+  may_not:
+  - certify a recipe
+  - write SQL
+  - guess answers the logic does not support
+  consumers:
+  - recipe_builder.RecipeBuilder
+  - app Recipe builder tab
 ---
 # Recipe drafter
 

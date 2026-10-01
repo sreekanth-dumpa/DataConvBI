@@ -266,3 +266,11 @@ def drafter_guard(options: dict[str, list[str]]) -> Guard:
 
 def passthrough(o: dict[str, Any]) -> GuardResult:
     return GuardResult(True, o)
+
+
+def router_guard(entry_points: list[str]) -> Guard:
+    def g(o: dict[str, Any]) -> GuardResult:
+        if o["skill"] not in entry_points:
+            return GuardResult(False, o, [{"reason": f"{o['skill']} is not an entry-point skill"}])
+        return GuardResult(True, {**o, "confidence": max(0.0, min(1.0, float(o["confidence"])))})
+    return g

@@ -264,7 +264,37 @@ def recipe_drafter(inp: dict[str, Any]) -> dict[str, Any]:
             "rationale": "Answered only questions whose option is named by a phrase in the logic."}
 
 
+# ----------------------------------------------------------------------------- route
+ROUTE_HINTS = {
+    "feedback-classifier": ("answer", "result", "chart", "wrong", "slow", "confusing", "thanks", "great", "should have", "looks",
+                            "incorrect", "bypass", "feedback"),
+    "recipe-drafter": ("define", "definition", "new metric", "recipe", "rule:", "counted as", "should count as", "metric logic",
+                       "share of", "build a"),
+    "intent-interpreter": ("what", "how many", "show", "conversion for", "rate for", "?", "compare", "by product", "by channel"),
+}
+
+
+def skill_router(inp: dict[str, Any]) -> dict[str, Any]:
+    t = inp["message"].lower()
+    entry = inp["entry_points"]
+    descs = {c["name"]: c["description"].lower() for c in inp["catalog"] if c["name"] in entry}
+    mt = _tokens(t)
+    scores = {}
+    for name in entry:
+        hint = sum(1 for h in ROUTE_HINTS.get(name, ()) if h in t)
+        overlap = len(mt & _tokens(descs.get(name, ""))) / max(1, len(mt))
+        scores[name] = hint + overlap
+    if inp.get("has_answer") is False:
+        scores["feedback-classifier"] = scores.get("feedback-classifier", 0) - 2
+    best = max(scores, key=lambda k: (scores[k], k == "intent-interpreter"))
+    total = sum(max(v, 0) for v in scores.values()) or 1
+    return {"skill": best, "confidence": round(max(scores[best], 0) / total, 3),
+            "reason": f"message matches the description of {best}",
+            "rationale": "Scored entry-point descriptions and routing cues against the message."}
+
+
 OFFLINE: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "skill-router": skill_router,
     "intent-interpreter": intent_interpreter, "recipe-nominator": recipe_nominator, "clarification-writer": clarification_writer,
     "obligation-proposer": obligation_proposer, "plan-proposer": plan_proposer, "probe-advisor": probe_advisor,
     "answer-narrator": answer_narrator, "assessment-diagnostician": assessment_diagnostician,

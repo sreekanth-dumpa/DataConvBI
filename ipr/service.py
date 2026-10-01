@@ -48,7 +48,8 @@ from .intent import (
     semantic_payload,
 )
 from .agents import AgentRunner
-from .agents.guards import (clarification_guard, diagnosis_guard, drafter_guard, interpreter_guard, narration_guard,
+from .agents.registry import catalog as skill_catalog
+from .agents.guards import (router_guard, clarification_guard, diagnosis_guard, drafter_guard, interpreter_guard, narration_guard,
                             obligation_guard, plan_guard, probe_guard)
 from .agents.providers import LLMProvider, default_provider
 from .monitoring import snapshot
@@ -1032,6 +1033,28 @@ class IPRService:
                                                                     dumps(case), self.clock.now_z()))
         self.trace.span(ctx["request_id"], "assess", execution_id=ex_id, decision={"case_id": case["case_id"], "gates": gates})
         return {"case": case, "document": doc, "path": str(folder)}
+
+    # ================================================================ conversation entry point (skill routing)
+    ENTRY_POINTS = ["intent-interpreter", "feedback-classifier", "recipe-drafter"]
+
+    def handle_message(self, text: str, requester: Requester | dict, *, execution_id: str | None = None,
+                       conversation_id: str | None = None) -> dict[str, Any]:
+        """Route a free-form message with the skill-router skill (catalog of names + descriptions), then run it."""
+        route = self.agents.invoke("skill-router", {"message": text, "catalog": skill_catalog(self.agents.skills),
+                                                    "entry_points": self.ENTRY_POINTS, "has_answer": execution_id is not None},
+                                   guard=router_guard(self.ENTRY_POINTS))
+        skill = route.output["skill"]
+        out: dict[str, Any] = {"routed_to": skill, "route": {**route.output, "agent": route.receipt()}}
+        if skill == "feedback-classifier" and execution_id:
+            out["assessment"] = self.assess(execution_id, text)
+        elif skill == "recipe-drafter":
+            out["recipe_proposal"] = self.draft_recipe_answers(text)
+        else:
+            st = self.interpret(text, requester, conversation_id=conversation_id)
+            out["request_id"] = st.record.request_id
+            out["resolution"] = self.ground(st.record.request_id).to_dict()
+            out["routed_to"] = "intent-interpreter"
+        return out
 
     # ================================================================ preferences, paging, export
     def set_preferences(self, subject: str, prefs: dict[str, Any]) -> None:

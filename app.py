@@ -113,13 +113,21 @@ def show_answer(ans: dict) -> None:
 
 # --------------------------------------------------------------------- Ask
 with tabs[0]:
-    q = st.text_area("Question", DEMO_Q, height=80)
+    q = st.text_area("Message (question, feedback on the last answer, or a new metric definition)", DEMO_Q, height=80)
     if st.button("Interpret and ground", type="primary"):
-        st_ = svc.interpret(q, Requester(subject=subject), parent_request_id=ss.request_id)
-        ss.request_id = st_.record.request_id
-        ss.execution_id = None
-        ss.reuse = None
-        svc.ground(ss.request_id)
+        routed = svc.handle_message(q, Requester(subject=subject), execution_id=ss.execution_id)
+        ss.last_route = routed
+        if routed["routed_to"] == "intent-interpreter":
+            ss.request_id = routed["request_id"]
+            ss.execution_id = None
+            ss.reuse = None
+    if ss.get("last_route"):
+        r = ss.last_route
+        st.caption(f"skill-router → **{r['routed_to']}** ({r['route']['reason']}; via {r['route']['agent']['provider']})")
+        if r["routed_to"] == "feedback-classifier":
+            st.markdown(r["assessment"]["document"])
+        elif r["routed_to"] == "recipe-drafter":
+            st.json(r["recipe_proposal"])
     rid = ss.request_id
     if rid:
         rs = svc.requests[rid]
@@ -293,7 +301,9 @@ with tabs[3]:
     st.caption(f"Provider: **{svc.agents.provider.name}** · agents propose; the compiler, guards, validators and policies decide.")
     for name, sk in svc.agents.skills.items():
         with st.expander(f"{name} @ {sk.version} — {sk.phase} · {sk.authority}"):
-            st.write(sk.description)
+            st.markdown(f"**Description (what the LLM reads first):** {sk.description}")
+            st.caption(sk.path)
+            st.write(sk.overview)
             st.markdown("**May:** " + "; ".join(sk.may))
             st.markdown("**May not:** " + "; ".join(sk.may_not))
             st.code(sk.system_prompt, language="markdown")

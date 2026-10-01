@@ -14,9 +14,10 @@ python -m pytest                        # oracle, variants, agents, cache safety
 
 ## Agent skills (LLM)
 
-The spec's agent roles are ten versioned skills in `ipr/agents/skills/<name>/SKILL.md`. Each file holds the
-prompt, an output JSON schema and an authority boundary ("may" / "may not"). The skills are
-`intent-interpreter`, `recipe-nominator`, `clarification-writer`, `obligation-proposer`, `plan-proposer`,
+The spec's agent roles are eleven versioned skills in `skills/<name>/SKILL.md` at the repo root. Each file holds the
+standard `name` and `description` frontmatter, a `metadata` block, the prompt, an output JSON schema and an authority
+boundary ("may" / "may not"). See `skills/README.md` for how the LLM discovers and uses them. The skills are
+`skill-router`, `intent-interpreter`, `recipe-nominator`, `clarification-writer`, `obligation-proposer`, `plan-proposer`,
 `probe-advisor`, `answer-narrator`, `assessment-diagnostician`, `feedback-classifier` and `recipe-drafter`.
 
 `AgentRunner` calls a skill through a provider:

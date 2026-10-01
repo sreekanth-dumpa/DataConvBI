@@ -1,12 +1,20 @@
 ---
 name: recipe-nominator
-version: 1.0.0
-phase: ground
-effort: low
-authority: propose_only
-may: ["nominate registered recipes that may answer the question", "explain relevance briefly"]
-may_not: ["nominate recipes that are not in the catalog", "assert applicability, authority or access", "supply a missing metric definition"]
-consumers: ["grounding.Grounder.candidate_recipes"]
+description: Nominates registered recipes from the certified catalog whose business meaning could answer an analytics question, with relevance and reasons. Use during grounding as semantic search; nominations are candidates that the compiler still checks for applicability.
+metadata:
+  version: 1.0.0
+  phase: ground
+  effort: low
+  authority: propose_only
+  may:
+  - nominate registered recipes that may answer the question
+  - explain relevance briefly
+  may_not:
+  - nominate recipes that are not in the catalog
+  - assert applicability, authority or access
+  - supply a missing metric definition
+  consumers:
+  - grounding.Grounder.candidate_recipes
 ---
 # Recipe nominator
 

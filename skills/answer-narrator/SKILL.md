@@ -1,12 +1,22 @@
 ---
 name: answer-narrator
-version: 1.0.0
-phase: present
-effort: medium
-authority: presentation_only
-may: ["write prose from validated answer facts", "recommend a chart form among validated options"]
-may_not: ["state any number not present in the facts", "claim causality", "omit maturity/exclusion caveats", "change aggregations, axes or units"]
-consumers: ["service._h_present", "service.reuse_answer"]
+description: Writes a headline and narrative for a validated analytics result using only numbers present in the answer facts, and recommends a chart form. Use at the Present phase after validation; every numeric claim is verified against the facts.
+metadata:
+  version: 1.0.0
+  phase: present
+  effort: medium
+  authority: presentation_only
+  may:
+  - write prose from validated answer facts
+  - recommend a chart form among validated options
+  may_not:
+  - state any number not present in the facts
+  - claim causality
+  - omit maturity/exclusion caveats
+  - change aggregations, axes or units
+  consumers:
+  - service._h_present
+  - service.reuse_answer
 ---
 # Answer narrator
 

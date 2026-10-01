@@ -1,12 +1,21 @@
 ---
 name: plan-proposer
-version: 1.0.0
-phase: plan
-effort: medium
-authority: propose_only
-may: ["propose a logical path using approved operator ids", "state a preference among admitted physical variants with a reason"]
-may_not: ["write SQL or Python", "use operators outside the approved list", "change the confirmed meaning", "override certification or budget admission"]
-consumers: ["service.plan"]
+description: Proposes an information path from approved operator ids, a preferred admitted physical variant (fused, staged or partitioned) and approved Python operators with bounded parameters. Use during planning after candidate variants and estimates exist.
+metadata:
+  version: 1.0.0
+  phase: plan
+  effort: medium
+  authority: propose_only
+  may:
+  - propose a logical path using approved operator ids
+  - state a preference among admitted physical variants with a reason
+  may_not:
+  - write SQL or Python
+  - use operators outside the approved list
+  - change the confirmed meaning
+  - override certification or budget admission
+  consumers:
+  - service.plan
 ---
 # Plan proposer
 

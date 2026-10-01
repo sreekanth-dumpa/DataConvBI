@@ -1,12 +1,21 @@
 ---
 name: clarification-writer
-version: 1.0.0
-phase: clarify_confirm
-effort: low
-authority: presentation_only
-may: ["rephrase open questions in business language", "summarize the recipe-grounded meaning for confirmation"]
-may_not: ["add, remove or answer questions", "change any definition, date, window or population", "state numbers that are not in the bound intent"]
-consumers: ["service.ground", "app Ask tab"]
+description: Rephrases open clarification questions in business language and writes a confirmation summary of the recipe-grounded meaning. Use after grounding when a user must answer questions or confirm population, definitions, window, cutoff and dimensions.
+metadata:
+  version: 1.0.0
+  phase: clarify_confirm
+  effort: low
+  authority: presentation_only
+  may:
+  - rephrase open questions in business language
+  - summarize the recipe-grounded meaning for confirmation
+  may_not:
+  - add, remove or answer questions
+  - change any definition, date, window or population
+  - state numbers that are not in the bound intent
+  consumers:
+  - service.ground
+  - app Ask tab
 ---
 # Clarification writer
 

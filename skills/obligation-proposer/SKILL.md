@@ -1,12 +1,19 @@
 ---
 name: obligation-proposer
-version: 1.0.0
-phase: plan
-effort: medium
-authority: add_only
-may: ["propose additional registered obligations", "request additional evidence"]
-may_not: ["remove, waive or mark satisfied any obligation", "invent obligation ids outside the registry"]
-consumers: ["service.plan -> ObligationManifest.merge_agent_proposal"]
+description: Reviews a compiler-derived obligation manifest and logical plan and proposes additional registered obligations or evidence requests. Use during planning; it can only add obligations, never remove or waive them.
+metadata:
+  version: 1.0.0
+  phase: plan
+  effort: medium
+  authority: add_only
+  may:
+  - propose additional registered obligations
+  - request additional evidence
+  may_not:
+  - remove, waive or mark satisfied any obligation
+  - invent obligation ids outside the registry
+  consumers:
+  - service.plan -> ObligationManifest.merge_agent_proposal
 ---
 # Obligation proposer
 

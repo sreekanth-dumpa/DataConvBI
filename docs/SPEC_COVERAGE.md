@@ -6,7 +6,7 @@ deliberately not implemented (reason given).
 
 ## Agent / LLM skills (where the spec says "agent")
 
-| Spec phrase | Skill (`ipr/agents/skills/<name>/SKILL.md`) | Guard (what the agent cannot do) | Used in | Tests |
+| Spec phrase | Skill (`skills/<name>/SKILL.md` at the repo root) | Guard (what the agent cannot do) | Used in | Tests |
 |---|---|---|---|---|
 | §2 Interpret: "Agent proposes intent" | `intent-interpreter` | ISO dates, state code, LOB, window bounds; unknown breakdowns stay visible as unsupported | `service.interpret` | test_agents |
 | §5 "Use semantic search to locate additional candidate recipes" | `recipe-nominator` | only registered recipe ids; hard applicability rules still decide | `Grounder.candidate_recipes` | test_agents (schema violation fallback) |

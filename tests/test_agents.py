@@ -52,7 +52,7 @@ def claude_with(handlers):
 
 def test_all_skills_are_defined_with_schemas_and_authority():
     skills = load_skills()
-    assert len(skills) == 10
+    assert len(skills) == 11
     for name, s in skills.items():
         assert s.system_prompt and s.schema["additionalProperties"] is False and s.may_not, name
         assert name in OFFLINE
@@ -217,3 +217,37 @@ def test_offline_outputs_match_schemas():
     out = OFFLINE["feedback-classifier"]({"feedback": "too slow", "dimensions": ["channel"]})
     assert not validate(out, skills["feedback-classifier"].schema) and out["change_class"] == "physical_plan"
     assert OfflineProvider().complete(skills["probe-advisor"], {"probes": [{"name": "cohort_size"}], "uncertainty": 4}).output["ranked"]
+
+
+def test_skills_folder_is_top_level_agent_skills_format():
+    from pathlib import Path
+
+    import yaml
+
+    from ipr.agents.registry import SKILLS_DIR, validate_frontmatter
+    assert SKILLS_DIR == Path(__file__).resolve().parents[1] / "skills"
+    folders = [p for p in SKILLS_DIR.iterdir() if p.is_dir()]
+    assert len(folders) == 11
+    for f in folders:
+        fm = yaml.safe_load((f / "SKILL.md").read_text().split("---\n")[1])
+        assert set(fm) == {"name", "description", "metadata"}
+        assert not validate_frontmatter(fm, f.name)
+
+
+def test_router_uses_descriptions_to_pick_entry_skill(svc):
+    q = svc.handle_message(DEMO_Q, {"subject": "analyst_nc"})
+    assert q["routed_to"] == "intent-interpreter" and q["resolution"]["status"] == "resolved"
+    out = svc.ask(DEMO_Q, {"subject": "analyst_nc"})
+    fb = svc.handle_message("The chart is confusing and the answer looks wrong for channel", {"subject": "analyst_nc"},
+                            execution_id=out["execution_id"])
+    assert fb["routed_to"] == "feedback-classifier" and fb["assessment"]["case"]["feedback_classification"]
+    rd = svc.handle_message("Define a new metric: share of quotes counted once per submission that bind within 30 days",
+                            {"subject": "analyst_nc"})
+    assert rd["routed_to"] == "recipe-drafter" and rd["recipe_proposal"]["answers"]
+
+
+def test_router_cannot_pick_pipeline_skill(make_service):
+    prov, _ = claude_with({"skill-router": lambda i: {"skill": "plan-proposer", "confidence": 0.9, "reason": "x", "rationale": "x"}})
+    svc = make_service(llm_provider=prov)
+    r = svc.handle_message(DEMO_Q, {"subject": "analyst_nc"})
+    assert r["route"]["agent"]["fallback_used"] and r["routed_to"] == "intent-interpreter"

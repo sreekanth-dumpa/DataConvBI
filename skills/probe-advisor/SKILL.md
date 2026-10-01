@@ -1,12 +1,19 @@
 ---
 name: probe-advisor
-version: 1.0.0
-phase: plan
-effort: low
-authority: advisory
-may: ["rank approved profiling probes by expected decision value"]
-may_not: ["invent probes", "override the discovery budget or probe count", "request source rows"]
-consumers: ["profiling.Profiler.collect"]
+description: Ranks approved profiling probes by whether their result could change a planning decision. Use before discovery probes run, when statistics are approximate and the discovery budget is limited.
+metadata:
+  version: 1.0.0
+  phase: plan
+  effort: low
+  authority: advisory
+  may:
+  - rank approved profiling probes by expected decision value
+  may_not:
+  - invent probes
+  - override the discovery budget or probe count
+  - request source rows
+  consumers:
+  - profiling.Profiler.collect
 ---
 # Probe advisor
 

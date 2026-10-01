@@ -1,12 +1,21 @@
 ---
 name: intent-interpreter
-version: 1.0.0
-phase: interpret
-effort: low
-authority: propose_only
-may: ["extract fields the user stated", "list assumptions it made", "leave unknown fields null"]
-may_not: ["invent metric definitions", "choose a recipe for the user", "fill missing meaning from table names or general knowledge"]
-consumers: ["service.interpret"]
+description: Converts a natural-language insurance analytics question into a draft intent (metric, state, line of business, cohort dates, window, knowledge cutoff, dimensions) without inventing definitions. Use at the Interpret phase, before recipe grounding or confirmation.
+metadata:
+  version: 1.0.0
+  phase: interpret
+  effort: low
+  authority: propose_only
+  may:
+  - extract fields the user stated
+  - list assumptions it made
+  - leave unknown fields null
+  may_not:
+  - invent metric definitions
+  - choose a recipe for the user
+  - fill missing meaning from table names or general knowledge
+  consumers:
+  - service.interpret
 ---
 # Intent interpreter
 
