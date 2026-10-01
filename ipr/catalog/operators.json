@@ -1,16 +1,198 @@
 {
   "registry_version": "operators/2026-10-01.1",
   "operators": {
-    "scoped_scan": {"version": "1", "accepts": [], "output_grain": "port_grain", "determinism": "deterministic", "obligations": ["ob.port_authorized", "ob.snapshot_bound", "ob.contract_version_bound"], "rewrites": []},
-    "canonical_event_selection": {"version": "2", "accepts": [["quote_branch_id"]], "output_grain": ["opportunity_id"], "determinism": "deterministic", "obligations": ["ob.identity_unique", "ob.tie_break_certified", "ob.exclusion_ledger_conservation", "ob.no_future_knowledge"], "rewrites": ["rw.fuse_staged_v1"]},
-    "key_reduction": {"version": "1", "accepts": [["bind_event_id"], ["opportunity_id"]], "output_grain": ["bind_event_id"], "determinism": "deterministic", "obligations": ["ob.semijoin_inner_region", "ob.no_future_knowledge"], "rewrites": ["rw.semijoin_key_reduction_v1"]},
-    "window_exists": {"version": "2", "accepts": [["opportunity_id"], ["bind_event_id"]], "output_grain": ["opportunity_id"], "determinism": "deterministic", "obligations": ["ob.no_future_knowledge", "ob.preserve_grain", "ob.half_open_window", "ob.numerator_le_denominator"], "rewrites": ["rw.fuse_staged_v1", "rw.copartition_window_reduction_v1"]},
-    "aggregate_sufficient_stats": {"version": "1", "accepts": [["opportunity_id"]], "output_grain": "output_dimensions", "determinism": "deterministic_exact", "obligations": ["ob.additive_algebra", "ob.numerator_le_denominator"], "rewrites": ["rw.fuse_staged_v1", "rw.derived_rollup_sum_v1"]},
-    "partition_hash": {"version": "1", "accepts": [["opportunity_id"], ["bind_event_id"]], "output_grain": "input_grain", "determinism": "deterministic", "hash_version": "sha256_mod_v1", "obligations": ["ob.copartition_same_key", "ob.partition_disjoint_cover"], "rewrites": ["rw.copartition_window_reduction_v1", "rw.combine_partitions_v1"]},
-    "union_disjoint_partitions": {"version": "1", "accepts": ["output_dimensions"], "output_grain": "output_dimensions", "determinism": "deterministic_exact", "obligations": ["ob.additive_algebra", "ob.denominator_conservation"], "rewrites": []},
-    "assert": {"version": "1", "accepts": ["any"], "output_grain": "none", "determinism": "deterministic", "obligations": [], "rewrites": []},
-    "materialize_stage": {"version": "1", "accepts": ["any"], "output_grain": "input_grain", "determinism": "deterministic", "obligations": ["ob.stage_private", "ob.stage_expiry"], "rewrites": []},
-    "publish_information_set": {"version": "1", "accepts": ["output_dimensions"], "output_grain": "output_dimensions", "determinism": "deterministic", "obligations": ["ob.complete_validated_only", "ob.coverage_manifest"], "rewrites": []},
-    "present": {"version": "1", "accepts": ["output_dimensions"], "output_grain": "none", "determinism": "deterministic", "obligations": ["ob.claims_link_validated_data"], "rewrites": []}
+    "scoped_scan": {
+      "version": "1",
+      "accepts": [],
+      "output_grain": "port_grain",
+      "determinism": "deterministic",
+      "obligations": [
+        "ob.port_authorized",
+        "ob.snapshot_bound",
+        "ob.contract_version_bound"
+      ],
+      "rewrites": []
+    },
+    "canonical_event_selection": {
+      "version": "2",
+      "accepts": [
+        [
+          "quote_branch_id"
+        ]
+      ],
+      "output_grain": [
+        "opportunity_id"
+      ],
+      "determinism": "deterministic",
+      "obligations": [
+        "ob.identity_unique",
+        "ob.tie_break_certified",
+        "ob.exclusion_ledger_conservation",
+        "ob.no_future_knowledge"
+      ],
+      "rewrites": [
+        "rw.fuse_staged_v1"
+      ]
+    },
+    "key_reduction": {
+      "version": "1",
+      "accepts": [
+        [
+          "bind_event_id"
+        ],
+        [
+          "opportunity_id"
+        ]
+      ],
+      "output_grain": [
+        "bind_event_id"
+      ],
+      "determinism": "deterministic",
+      "obligations": [
+        "ob.semijoin_inner_region",
+        "ob.no_future_knowledge"
+      ],
+      "rewrites": [
+        "rw.semijoin_key_reduction_v1"
+      ]
+    },
+    "window_exists": {
+      "version": "2",
+      "accepts": [
+        [
+          "opportunity_id"
+        ],
+        [
+          "bind_event_id"
+        ]
+      ],
+      "output_grain": [
+        "opportunity_id"
+      ],
+      "determinism": "deterministic",
+      "obligations": [
+        "ob.no_future_knowledge",
+        "ob.preserve_grain",
+        "ob.half_open_window",
+        "ob.numerator_le_denominator"
+      ],
+      "rewrites": [
+        "rw.fuse_staged_v1",
+        "rw.copartition_window_reduction_v1"
+      ]
+    },
+    "aggregate_sufficient_stats": {
+      "version": "1",
+      "accepts": [
+        [
+          "opportunity_id"
+        ]
+      ],
+      "output_grain": "output_dimensions",
+      "determinism": "deterministic_exact",
+      "obligations": [
+        "ob.additive_algebra",
+        "ob.numerator_le_denominator"
+      ],
+      "rewrites": [
+        "rw.fuse_staged_v1",
+        "rw.derived_rollup_sum_v1"
+      ]
+    },
+    "partition_hash": {
+      "version": "1",
+      "accepts": [
+        [
+          "opportunity_id"
+        ],
+        [
+          "bind_event_id"
+        ]
+      ],
+      "output_grain": "input_grain",
+      "determinism": "deterministic",
+      "hash_version": "sha256_mod_v1",
+      "obligations": [
+        "ob.copartition_same_key",
+        "ob.partition_disjoint_cover"
+      ],
+      "rewrites": [
+        "rw.copartition_window_reduction_v1",
+        "rw.combine_partitions_v1"
+      ]
+    },
+    "union_disjoint_partitions": {
+      "version": "1",
+      "accepts": [
+        "output_dimensions"
+      ],
+      "output_grain": "output_dimensions",
+      "determinism": "deterministic_exact",
+      "obligations": [
+        "ob.additive_algebra",
+        "ob.denominator_conservation"
+      ],
+      "rewrites": []
+    },
+    "assert": {
+      "version": "1",
+      "accepts": [
+        "any"
+      ],
+      "output_grain": "none",
+      "determinism": "deterministic",
+      "obligations": [],
+      "rewrites": []
+    },
+    "materialize_stage": {
+      "version": "1",
+      "accepts": [
+        "any"
+      ],
+      "output_grain": "input_grain",
+      "determinism": "deterministic",
+      "obligations": [
+        "ob.stage_private",
+        "ob.stage_expiry"
+      ],
+      "rewrites": []
+    },
+    "publish_information_set": {
+      "version": "1",
+      "accepts": [
+        "output_dimensions"
+      ],
+      "output_grain": "output_dimensions",
+      "determinism": "deterministic",
+      "obligations": [
+        "ob.complete_validated_only",
+        "ob.coverage_manifest"
+      ],
+      "rewrites": []
+    },
+    "present": {
+      "version": "1",
+      "accepts": [
+        "output_dimensions"
+      ],
+      "output_grain": "none",
+      "determinism": "deterministic",
+      "obligations": [
+        "ob.claims_link_validated_data"
+      ],
+      "rewrites": []
+    },
+    "approved_python_operator": {
+      "version": "1",
+      "accepts": [
+        "output_dimensions"
+      ],
+      "output_grain": "output_dimensions",
+      "determinism": "deterministic_float_tolerance",
+      "obligations": [
+        "ob.python_operator_pinned"
+      ],
+      "rewrites": []
+    }
   }
 }

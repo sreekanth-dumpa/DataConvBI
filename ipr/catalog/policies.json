@@ -1,21 +1,67 @@
 {
   "registry_version": "policies/2026-10-01.1",
   "policies": {
-    "pol.no_future_knowledge": {"kind": "temporal", "applies_to_domains": ["quote", "policy"], "obligations": ["ob.no_future_knowledge"], "description": "Historical answers must exclude records known after the knowledge cutoff."},
-    "pol.pinned_cut_admission": {"kind": "temporal", "applies_to_domains": ["quote", "policy"], "obligations": ["ob.cut_admission"], "description": "Pinned execution requires complete publications whose knowledge watermark covers the cutoff."},
-    "pol.requester_identity": {"kind": "access", "applies_to_domains": ["*"], "obligations": ["ob.access"], "description": "Analytical reads use the delegated requester identity; never a broader service principal (ADR-01)."},
-    "pol.no_cross_subject_reuse": {"kind": "access", "applies_to_domains": ["*"], "obligations": [], "description": "Cross-subject cache reuse requires a certified effective-access class."}
+    "pol.no_future_knowledge": {
+      "kind": "temporal",
+      "applies_to_domains": [
+        "quote",
+        "policy"
+      ],
+      "obligations": [
+        "ob.no_future_knowledge"
+      ],
+      "description": "Historical answers must exclude records known after the knowledge cutoff."
+    },
+    "pol.pinned_cut_admission": {
+      "kind": "temporal",
+      "applies_to_domains": [
+        "quote",
+        "policy"
+      ],
+      "obligations": [
+        "ob.cut_admission"
+      ],
+      "description": "Pinned execution requires complete publications whose knowledge watermark covers the cutoff."
+    },
+    "pol.requester_identity": {
+      "kind": "access",
+      "applies_to_domains": [
+        "*"
+      ],
+      "obligations": [
+        "ob.access"
+      ],
+      "description": "Analytical reads use the delegated requester identity; never a broader service principal (ADR-01)."
+    },
+    "pol.no_cross_subject_reuse": {
+      "kind": "access",
+      "applies_to_domains": [
+        "*"
+      ],
+      "obligations": [],
+      "description": "Cross-subject cache reuse requires a certified effective-access class."
+    }
   },
   "budget_policies": {
     "warehouse_admission_v2": {
-      "warehouse_rates_credits_per_hour": {"XSMALL": 1, "SMALL": 2, "MEDIUM": 4, "LARGE": 8},
+      "warehouse_rates_credits_per_hour": {
+        "XSMALL": 1,
+        "SMALL": 2,
+        "MEDIUM": 4,
+        "LARGE": 8
+      },
       "resume_minimum_seconds": 60,
       "auto_suspend_seconds": 60,
-      "allowed_classes": ["XSMALL", "SMALL", "MEDIUM", "LARGE"],
+      "allowed_classes": [
+        "XSMALL",
+        "SMALL",
+        "MEDIUM",
+        "LARGE"
+      ],
       "default_class": "MEDIUM",
       "statement_timeout_seconds": 600,
       "statement_queued_timeout_seconds": 120,
-      "max_probes": 4,
+      "max_probes": 6,
       "max_attempts_per_node": 3,
       "retry_allowance_fraction": 0.25,
       "service_overhead_credits": 0.002

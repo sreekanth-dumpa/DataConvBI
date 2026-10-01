@@ -60,6 +60,8 @@ class OnlineRuntime:
         self.handlers: dict[str, Callable[[dict, dict, dict], dict]] = {}
         self.adaptation_policy: Callable[[dict, dict, set[str]], dict | None] | None = None
         self.on_stage_cost: Callable[[str, dict], bool] | None = None
+        # re-authorization before every stage read/submission (ADR-01); returns (ok, reason)
+        self.on_node_admission: Callable[[str, dict], tuple[bool, str]] | None = None
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._tokens = {k: threading.Semaphore(v) for k, v in RESOURCE_TOKENS.items()}
@@ -89,7 +91,8 @@ class OnlineRuntime:
     # ------------------------------------------------------------------ admission
     def admit(self, *, execution_id: str, request_id: str, plan_id: str, physical_id: str, physical: dict[str, Any],
               principal: str, purpose: str, tenant: str, cut: dict[str, Any], access: dict[str, Any],
-              budget: dict[str, Any], estimate: dict[str, Any], plan_version: int = 1, share: bool = True) -> dict[str, Any]:
+              budget: dict[str, Any], estimate: dict[str, Any], plan_version: int = 1, share: bool = True,
+              not_before: str | None = None) -> dict[str, Any]:
         t0 = time.perf_counter()
         now = self.clock.now_z()
         workflow_id = f"wf_{execution_id}"
@@ -100,6 +103,8 @@ class OnlineRuntime:
                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (execution_id, request_id, plan_id, physical_id, workflow_id, "admitted", principal, purpose, tenant,
                          0.0, dumps(cut), dumps(access), dumps(budget), dumps(estimate), now, plan_version))
+            if not_before:
+                con.execute("UPDATE executions SET state='queued' WHERE execution_id=?", (execution_id,))
             for n in physical["nodes"]:
                 share_key = self._share_key(n, cut, access, physical) if n["kind"] == "sql_ctas" else None
                 shared_from = None
@@ -116,8 +121,8 @@ class OnlineRuntime:
                             "share_key, shared_from, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                             (execution_id, n["id"], dumps(n), state, dumps(n["depends_on"]), prio[n["id"]], plan_version,
                              share_key, shared_from, now))
-            con.execute("INSERT INTO outbox (kind, payload, state, created_at) VALUES (?,?,?,?)",
-                        ("start_workflow", dumps({"execution_id": execution_id, "workflow_id": workflow_id}), "pending", now))
+            con.execute("INSERT INTO outbox (kind, payload, state, created_at, not_before) VALUES (?,?,?,?,?)",
+                        ("start_workflow", dumps({"execution_id": execution_id, "workflow_id": workflow_id}), "pending", now, not_before))
         # shared producer may already be complete
         self._resolve_waiters_for_execution(execution_id)
         return {"execution_id": execution_id, "workflow_id": workflow_id, "admission_latency_ms": round((time.perf_counter() - t0) * 1000, 3)}
@@ -153,8 +158,9 @@ class OnlineRuntime:
 
     def _relay_once(self) -> bool:
         with self.store.tx() as con:
-            row = con.execute("SELECT * FROM outbox WHERE state='pending' OR (state='claimed' AND claimed_until<?) ORDER BY id LIMIT 1",
-                              (time.time(),)).fetchone()
+            row = con.execute("SELECT * FROM outbox WHERE (state='pending' OR (state='claimed' AND claimed_until<?)) "
+                              "AND (not_before IS NULL OR not_before<=?) ORDER BY id LIMIT 1",
+                              (time.time(), self.clock.now_z())).fetchone()
             if not row:
                 return False
             con.execute("UPDATE outbox SET state='claimed', claimed_by='relay', claimed_until=? WHERE id=?", (time.time() + 10, row["id"]))
@@ -168,8 +174,13 @@ class OnlineRuntime:
         now = self.clock.now_z()
         with self.store.tx() as con:
             ex = con.execute("SELECT state FROM executions WHERE execution_id=?", (execution_id,)).fetchone()
-            if not ex or ex["state"] != "admitted":
+            if not ex or ex["state"] not in ("admitted", "queued"):
                 return  # idempotent start
+            ex_c = con.execute("SELECT cancel_requested FROM executions WHERE execution_id=?", (execution_id,)).fetchone()
+            if ex_c["cancel_requested"]:
+                con.execute("UPDATE executions SET state='cancelled', finished_at=? WHERE execution_id=?", (now, execution_id))
+                con.execute("UPDATE nodes SET state='cancelled' WHERE execution_id=?", (execution_id,))
+                return
             con.execute("UPDATE executions SET state='running', started_at=? WHERE execution_id=?", (now, execution_id))
             con.execute("UPDATE nodes SET state='ready', updated_at=? WHERE execution_id=? AND state='pending' AND depends_json='[]'",
                         (str(time.time()), execution_id))
@@ -247,6 +258,18 @@ class OnlineRuntime:
             self._set_node(claim, "cancelled")
             self._maybe_finish(claim["execution_id"])
             return
+        budget = loads(claim["budget_json"]) or {}
+        deadline = budget.get("deadline_epoch")
+        if deadline and time.time() > deadline:
+            self._set_node(claim, "failed")
+            self._fail_execution(claim, f"whole-execution deadline exceeded before {claim['node_id']}")
+            return
+        if self.on_node_admission is not None and claim["mode"] == "execute":
+            ok, reason = self.on_node_admission(claim["execution_id"], spec)
+            if not ok:
+                self._set_node(claim, "cancelled")
+                self._fail_execution(claim, f"authorization changed mid-run; remaining stages aborted: {reason}")
+                return
         if spec["kind"] == "sql_ctas":
             self._run_sql(worker_id, claim)
         else:
@@ -331,11 +354,18 @@ class OnlineRuntime:
     def _await_and_complete(self, claim, attempt_id: str, qid: str, out: str, sess) -> None:
         ex_id, node_id, spec = claim["execution_id"], claim["node_id"], claim["spec"]
         last_hb = time.monotonic()
+        started = time.monotonic()
+        budget = loads(claim["budget_json"]) or {}
+        stmt_timeout = float(budget.get("statement_timeout_seconds") or 0)
         cancelled_sent = False
+        timed_out = False
         while True:
             rec = self.engine.query_record(qid)
             if rec.status != "RUNNING":
                 break
+            if stmt_timeout and not cancelled_sent and time.monotonic() - started > stmt_timeout:
+                sess.cancel(qid)  # STATEMENT_TIMEOUT_IN_SECONDS analogue; cancellation is then reconciled below
+                cancelled_sent = timed_out = True
             if time.monotonic() - last_hb > self.heartbeat_seconds:
                 if not self._heartbeat(claim):
                     return  # fenced out: another worker owns this node now
@@ -351,6 +381,12 @@ class OnlineRuntime:
         metrics = {**prior, **metrics}
         if rec.status == "SUCCESS":
             self._complete_sql(claim, attempt_id, out, metrics, sess)
+        elif rec.status == "CANCELLED" and timed_out:
+            self.store.x("UPDATE node_attempts SET state='timed_out', ended_at=?, metrics_json=?, error=? WHERE attempt_id=?",
+                         (self.clock.now_z(), dumps(metrics), f"statement timeout {stmt_timeout}s", attempt_id))
+            self._drop_stage(out)
+            self._set_node(claim, "failed")
+            self._fail_execution(claim, f"{node_id} exceeded statement timeout {stmt_timeout}s")
         elif rec.status == "CANCELLED":
             self.store.x("UPDATE node_attempts SET state='cancelled', ended_at=?, metrics_json=?, error=? WHERE attempt_id=?",
                          (self.clock.now_z(), dumps(metrics), rec.error, attempt_id))

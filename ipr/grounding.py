@@ -17,19 +17,7 @@ from .intent import Clarification, IntentRecord, KNOWN_DIMENSIONS
 from .obligations import ObligationCompiler, ObligationManifest
 from .registry import Registry
 
-TOKEN_RE = re.compile(r"[a-z0-9]+")
 SEMANTIC_THRESHOLD = 0.12
-
-
-def _tokens(text: str) -> set[str]:
-    return set(TOKEN_RE.findall(text.lower()))
-
-
-def _similarity(a: str, b: str) -> float:
-    ta, tb = _tokens(a), _tokens(b)
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / len(ta | tb)
 
 
 @dataclass
@@ -46,6 +34,7 @@ class Resolution:
     obligations_a: ObligationManifest | None = None
     bound_fields: dict[str, Any] = field(default_factory=dict)
     advisory_feedback: list[dict[str, Any]] = field(default_factory=list)
+    semantic_paths: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -53,7 +42,7 @@ class Resolution:
             "questions": [q.model_dump() for q in self.questions], "unsupported": self.unsupported, "missing": self.missing,
             "gaps": self.gaps, "evidence_manifest": self.evidence_manifest, "bound_fields": self.bound_fields,
             "obligations_a": self.obligations_a.to_dict() if self.obligations_a else None,
-            "advisory_feedback": self.advisory_feedback,
+            "advisory_feedback": self.advisory_feedback, "semantic_paths": self.semantic_paths,
         }
 
 
@@ -63,8 +52,12 @@ def end_of_local_day_utc(d: str, tz: str) -> str:
 
 
 class Grounder:
-    def __init__(self, registry: Registry, clock=None, metadata_visibility: tuple[str, ...] = ("public", "internal")):
+    def __init__(self, registry: Registry, clock=None, metadata_visibility: tuple[str, ...] = ("public", "internal"), agents=None,
+                 semantic_graph=None):
+        from .semantic_graph import SemanticGraph
         self.registry = registry
+        self.agents = agents
+        self.graph = semantic_graph or SemanticGraph()
         self.compiler = ObligationCompiler(registry)
         self.clock = clock
         self.visibility = metadata_visibility
@@ -85,19 +78,32 @@ class Grounder:
                 how = "parameterized_pattern"
             if how:
                 found[key] = {"recipe": r, "matched_by": how, "similarity": None}
-        # semantic search for additional candidates; never authoritative by itself
-        for r in self.registry.recipes:
-            key = f"{r['id']}@{r['version']}"
+        # semantic search (recipe-nominator skill) for additional candidates; never authoritative by itself
+        for nom in self._nominate(rec):
+            key = f"{nom['recipe_id']}@{nom['version']}"
             if key in found:
+                found[key]["agent_reason"] = nom["reason"]
                 continue
-            sim = _similarity(text, " ".join([r["title"], r["description"], " ".join(r["intent_aliases"])]))
-            if sim >= SEMANTIC_THRESHOLD:
-                found[key] = {"recipe": r, "matched_by": "semantic_search", "similarity": round(sim, 3)}
+            if nom["relevance"] >= SEMANTIC_THRESHOLD * 2:
+                found[key] = {"recipe": self.registry.recipe(nom["recipe_id"], nom["version"]), "matched_by": "semantic_search",
+                              "similarity": nom["relevance"], "agent_reason": nom["reason"]}
         conversion_metrics = {"quote_conversion"} | {r["id"] for r in self.registry.recipes if r["metric_type"] == "event_conversion_rate"}
         if rec.intent.metric and rec.intent.metric not in conversion_metrics and not requested:
             # a recognized non-conversion metric does not match conversion recipes
             found = {k: v for k, v in found.items() if v["matched_by"] == "explicit_request"}
         return list(found.values())
+
+    def _nominate(self, rec: IntentRecord) -> list[dict[str, Any]]:
+        catalog = [{"recipe_id": r["id"], "version": r["version"], "title": r["title"], "description": r["description"],
+                    "aliases": r["intent_aliases"], "metric_type": r["metric_type"], "status": r["status"]} for r in self.registry.recipes]
+        if self.agents is None:
+            from .agents.offline import recipe_nominator
+            return recipe_nominator({"question": rec.raw_text, "catalog": catalog})["nominations"]
+        from .agents.guards import nomination_guard
+        r = self.agents.invoke("recipe-nominator", {"question": rec.raw_text, "draft_intent": rec.intent.model_dump(mode="json"),
+                                                    "catalog": catalog},
+                               guard=nomination_guard({c["recipe_id"]: c["version"] for c in catalog}), request_id=rec.request_id)
+        return r.output["nominations"]
 
     def applicability(self, recipe: dict[str, Any], rec: IntentRecord, explicitly_requested: bool) -> dict[str, Any]:
         reasons, unsupported = [], []
@@ -119,8 +125,9 @@ class Grounder:
                 reasons.append(f"window {rec.intent.window.value} outside [{lo},{hi}]")
                 unsupported.append(f"window={rec.intent.window.value}")
         for d in rec.intent.dimensions:
-            if d not in recipe["allowed_dimensions"]:
-                reasons.append(f"dimension {d} not supported by the certified recipe")
+            sem = self.graph.resolve_dimension(d, recipe)
+            if sem["status"] != "supported":
+                reasons.append(f"dimension {d}: {sem['reason']}")
                 unsupported.append(f"dimension={d}")
         return {"recipe": f"{recipe['id']}@{recipe['version']}", "applicable": not reasons, "reasons": reasons,
                 "unsupported": unsupported}
@@ -194,7 +201,7 @@ class Grounder:
         manifest = self.compiler.pass_a(metric_types, applicable, domains)
 
         res = Resolution(status="resolved", route=None, candidates=[{"recipe": f"{c['recipe']['id']}@{c['recipe']['version']}",
-                         "matched_by": c["matched_by"], "similarity": c["similarity"]} for c in cands],
+                         "matched_by": c["matched_by"], "similarity": c["similarity"], "agent_reason": c.get("agent_reason")} for c in cands],
                          applicability=decisions, unsupported=unsupported, obligations_a=manifest)
 
         if not cands or (not applicable and not unsupported):
@@ -206,6 +213,8 @@ class Grounder:
         if not applicable:
             res.status = "unsupported"
             res.gaps.append("Requested meaning is outside every certified recipe: " + ", ".join(unsupported))
+            res.gaps.extend(r for d in decisions for r in d["reasons"] if r.startswith("dimension "))
+            res.gaps = list(dict.fromkeys(res.gaps))
             manifest.evaluate({"route_resolved": False}, metadata_only=True)
             return res
 
@@ -221,6 +230,7 @@ class Grounder:
             return res
 
         recipe = applicable[0]
+        res.semantic_paths = [self.graph.resolve_dimension(d, recipe) for d in rec.intent.dimensions]
         res.route = {"recipe_id": recipe["id"], "version": recipe["version"], "binding_version": recipe["binding_version"],
                      "certificate_ref": recipe["certification"]["certificate_ref"], "status": recipe["status"],
                      "title": recipe["title"]}

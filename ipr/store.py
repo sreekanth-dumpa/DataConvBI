@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS node_attempts (attempt_id TEXT PRIMARY KEY, execution
 CREATE TABLE IF NOT EXISTS adaptations (execution_id TEXT, version INTEGER, prev_version INTEGER, adaptation_json TEXT,
   created_at TEXT, PRIMARY KEY (execution_id, version));
 CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, payload TEXT, state TEXT, created_at TEXT,
-  claimed_by TEXT, claimed_until REAL);
+  claimed_by TEXT, claimed_until REAL, not_before TEXT);
+CREATE TABLE IF NOT EXISTS preferences (subject TEXT PRIMARY KEY, prefs_json TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS exports (export_id TEXT PRIMARY KEY, execution_id TEXT, subject TEXT, path TEXT, manifest_json TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS result_manifests (execution_id TEXT, output_key TEXT UNIQUE, manifest_json TEXT, digest TEXT,
   created_at TEXT);
 CREATE TABLE IF NOT EXISTS cache_entries (information_set_id TEXT PRIMARY KEY, coverage_key TEXT, semantic_fingerprint TEXT,

@@ -61,7 +61,7 @@ class AccessProvider:
         meta = self._meta()
         states = sorted(r["state"] for r in self.engine.admin_query(
             "SELECT DISTINCT state FROM policy_state_mapping WHERE subject=? AND purpose=?", (requester.subject, requester.purpose)))
-        policy_deps = sorted({self.engine.registry.port(p)["row_access_policy"] for p in port_refs})
+        policy_deps = sorted({str(self.engine.registry.port(p).get("row_access_policy") or "unknown") for p in port_refs})
         reasons = []
         allowed = bool(states)
         if not states:
@@ -76,7 +76,10 @@ class AccessProvider:
         access_class = None
         cert = None
         mode = "subject_scoped"
-        if self.certify_classes and states:
+        unknown_deps = any(d in (None, "", "unknown") for d in policy_deps) or not policy_deps
+        if unknown_deps:
+            reasons.append("unknown policy dependencies: cross-subject reuse forbidden")
+        if self.certify_classes and states and not unknown_deps:
             # The provider certifies identical visibility for every subject in the class.
             access_class = fingerprint({"class": base})
             cert = f"access-class-cert/{access_class.split(':')[1][:12]}"

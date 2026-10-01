@@ -83,3 +83,19 @@ def test_pass_a_closure_includes_implied_obligations():
     reg = load_registry()
     m = ObligationCompiler(reg).pass_a(["event_conversion_rate"], [reg.recipe("gross_submission_quote_conversion")], ["quote"])
     assert {"ob.cut_admission", "ob.identity_unique", "ob.exclusion_ledger_conservation", "ob.additive_algebra"} <= set(m.obligations)
+
+
+def test_semantic_graph_explains_unsupported_dimension(svc):
+    st = svc.interpret("30-day quote conversion for NC personal auto quotes in August 2026 by driver age, as of 2026-09-15",
+                       {"subject": "analyst_nc"})
+    res = svc.ground(st.record.request_id)
+    assert res.status == "unsupported"
+    assert any("no certified source mapping for driver_age" in g for g in res.gaps)
+
+
+def test_semantic_graph_paths_for_supported_dimensions(svc):
+    st = svc.interpret(DEMO_Q, {"subject": "analyst_nc"})
+    res = svc.ground(st.record.request_id)
+    paths = {p["dimension"]: p for p in res.semantic_paths}
+    assert paths["channel"]["status"] == "supported" and paths["channel"]["attribution"] == "first_eligible_quoted_branch"
+    assert paths["product_version"]["path"] == ["quote_branch->submission_opportunity (many_to_one)"]

@@ -1,39 +1,275 @@
 {
   "registry_version": "obligations/2026-10-01.1",
   "obligations": {
-    "ob.metric_classification": {"description": "Metric type classified against a registered template", "satisfied_by": ["route"], "validation": null},
-    "ob.definition_resolution": {"description": "An authoritative certified definition resolves the requested meaning", "satisfied_by": ["route"], "validation": null},
-    "ob.identity": {"description": "Canonical entity identity and multi-version policy resolved", "satisfied_by": ["evidence:clm.quote_identity"], "validation": "a.grain_unique_cohort", "implies": ["ob.identity_unique"]},
-    "ob.linkage": {"description": "Event-to-entity linkage certified", "satisfied_by": ["evidence:clm.bind_linkage"], "validation": null},
-    "ob.attribution": {"description": "Dimension attribution and tie-break rule certified", "satisfied_by": ["evidence:clm.quote_identity"], "validation": null},
-    "ob.maturity": {"description": "Maturity/censoring policy and exclusion ledger", "satisfied_by": ["evidence:clm.temporal_window"], "validation": "a.conservation", "implies": ["ob.exclusion_ledger_conservation"]},
-    "ob.timezone_window": {"description": "Business timezone, window unit, interval and DST rule", "satisfied_by": ["evidence:clm.temporal_window"], "validation": null},
-    "ob.event_definition": {"description": "Numerator event definition", "satisfied_by": ["evidence:clm.bind_definition"], "validation": null},
-    "ob.cancellation": {"description": "Cancellation treatment", "satisfied_by": ["evidence:clm.bind_definition"], "validation": null},
-    "ob.authority": {"description": "Authoritative product ports for each input", "satisfied_by": ["registry:products"], "validation": null},
-    "ob.access": {"description": "Requester effective access established and re-authorized before reads", "satisfied_by": ["access_decision"], "validation": null},
-    "ob.aggregation": {"description": "Sufficient statistics and aggregation algebra", "satisfied_by": ["evidence:clm.analytical_algebra"], "validation": "a.num_le_den", "implies": ["ob.additive_algebra"]},
-    "ob.no_future_knowledge": {"description": "No record known after the knowledge cutoff enters the result", "satisfied_by": ["policy:pol.no_future_knowledge"], "validation": "a.no_future_knowledge", "implies": ["ob.cut_admission"]},
-    "ob.cut_admission": {"description": "Every publication is complete and its watermark covers the cutoff", "satisfied_by": ["cut_admission"], "validation": null},
-    "ob.port_authorized": {"description": "Reads go through an authorized product contract surface", "satisfied_by": ["registry:products"], "validation": null},
-    "ob.snapshot_bound": {"description": "Each port read is bound to a selected publication snapshot", "satisfied_by": ["cut_admission"], "validation": null},
-    "ob.identity_unique": {"description": "Canonical selection emits one row per opportunity", "satisfied_by": ["certificate"], "validation": "a.grain_unique_cohort"},
-    "ob.tie_break_certified": {"description": "Deterministic certified tie-break for equal quote times", "satisfied_by": ["evidence:clm.quote_identity"], "validation": null},
-    "ob.exclusion_ledger_conservation": {"description": "eligible_all = eligible_mature + immature + quality_excluded", "satisfied_by": ["certificate"], "validation": "a.conservation"},
-    "ob.semijoin_inner_region": {"description": "Key reduction only on a certified inner/exists region", "satisfied_by": ["certificate"], "validation": null},
-    "ob.preserve_grain": {"description": "Window reduction emits one outcome per opportunity", "satisfied_by": ["certificate"], "validation": "a.grain_unique_outcome"},
-    "ob.half_open_window": {"description": "Converting events satisfy the recipe's window interval", "satisfied_by": ["certificate"], "validation": "a.window_respected", "implies": ["ob.timezone_window"]},
-    "ob.numerator_le_denominator": {"description": "converted <= eligible_mature for every output row", "satisfied_by": ["certificate"], "validation": "a.num_le_den"},
-    "ob.additive_algebra": {"description": "Only additive sufficient statistics are merged; ratios recomputed", "satisfied_by": ["evidence:clm.analytical_algebra"], "validation": null},
-    "ob.copartition_same_key": {"description": "Cohort and events partitioned by the same normalized key, hash version and N", "satisfied_by": ["certificate"], "validation": "a.partition_cover", "implies": ["ob.identity_unique", "ob.partition_disjoint_cover"]},
-    "ob.partition_disjoint_cover": {"description": "Every opportunity reaches exactly one partition", "satisfied_by": ["certificate"], "validation": "a.partition_cover"},
-    "ob.denominator_conservation": {"description": "Merged partition denominators equal the canonical cohort", "satisfied_by": ["certificate"], "validation": "a.partition_conservation", "implies": ["ob.exclusion_ledger_conservation"]},
-    "ob.stage_private": {"description": "Stage relation restricted to producing principal and execution", "satisfied_by": ["runtime:stage_registry"], "validation": "a.stage_registered"},
-    "ob.stage_expiry": {"description": "Stage relation has expiry metadata and a sweeper", "satisfied_by": ["runtime:stage_registry"], "validation": "a.stage_registered"},
-    "ob.edge_grain_compatible": {"description": "Edge connects producer output grain to an accepted consumer input grain", "satisfied_by": ["compiler:edge_check"], "validation": null},
-    "ob.contract_version_bound": {"description": "Product contract version bound in the source cut", "satisfied_by": ["cut_admission"], "validation": null},
-    "ob.complete_validated_only": {"description": "Only complete validated information sets are published", "satisfied_by": ["runtime:publication_protocol"], "validation": null, "implies": ["ob.access"]},
-    "ob.coverage_manifest": {"description": "Published set carries a coverage contract", "satisfied_by": ["runtime:publication_protocol"], "validation": null},
-    "ob.claims_link_validated_data": {"description": "Every numerical claim links to validated data", "satisfied_by": ["runtime:presentation_facts"], "validation": null}
+    "ob.metric_classification": {
+      "description": "Metric type classified against a registered template",
+      "satisfied_by": [
+        "route"
+      ],
+      "validation": null
+    },
+    "ob.definition_resolution": {
+      "description": "An authoritative certified definition resolves the requested meaning",
+      "satisfied_by": [
+        "route"
+      ],
+      "validation": null
+    },
+    "ob.identity": {
+      "description": "Canonical entity identity and multi-version policy resolved",
+      "satisfied_by": [
+        "evidence:clm.quote_identity"
+      ],
+      "validation": "a.grain_unique_cohort",
+      "implies": [
+        "ob.identity_unique"
+      ]
+    },
+    "ob.linkage": {
+      "description": "Event-to-entity linkage certified",
+      "satisfied_by": [
+        "evidence:clm.bind_linkage"
+      ],
+      "validation": null
+    },
+    "ob.attribution": {
+      "description": "Dimension attribution and tie-break rule certified",
+      "satisfied_by": [
+        "evidence:clm.quote_identity"
+      ],
+      "validation": null
+    },
+    "ob.maturity": {
+      "description": "Maturity/censoring policy and exclusion ledger",
+      "satisfied_by": [
+        "evidence:clm.temporal_window"
+      ],
+      "validation": "a.conservation",
+      "implies": [
+        "ob.exclusion_ledger_conservation"
+      ]
+    },
+    "ob.timezone_window": {
+      "description": "Business timezone, window unit, interval and DST rule",
+      "satisfied_by": [
+        "evidence:clm.temporal_window"
+      ],
+      "validation": null
+    },
+    "ob.event_definition": {
+      "description": "Numerator event definition",
+      "satisfied_by": [
+        "evidence:clm.bind_definition"
+      ],
+      "validation": null
+    },
+    "ob.cancellation": {
+      "description": "Cancellation treatment",
+      "satisfied_by": [
+        "evidence:clm.bind_definition"
+      ],
+      "validation": null
+    },
+    "ob.authority": {
+      "description": "Authoritative product ports for each input",
+      "satisfied_by": [
+        "registry:products"
+      ],
+      "validation": null
+    },
+    "ob.access": {
+      "description": "Requester effective access established and re-authorized before reads",
+      "satisfied_by": [
+        "access_decision"
+      ],
+      "validation": null
+    },
+    "ob.aggregation": {
+      "description": "Sufficient statistics and aggregation algebra",
+      "satisfied_by": [
+        "evidence:clm.analytical_algebra"
+      ],
+      "validation": "a.num_le_den",
+      "implies": [
+        "ob.additive_algebra"
+      ]
+    },
+    "ob.no_future_knowledge": {
+      "description": "No record known after the knowledge cutoff enters the result",
+      "satisfied_by": [
+        "policy:pol.no_future_knowledge"
+      ],
+      "validation": "a.no_future_knowledge",
+      "implies": [
+        "ob.cut_admission"
+      ]
+    },
+    "ob.cut_admission": {
+      "description": "Every publication is complete and its watermark covers the cutoff",
+      "satisfied_by": [
+        "cut_admission"
+      ],
+      "validation": null
+    },
+    "ob.port_authorized": {
+      "description": "Reads go through an authorized product contract surface",
+      "satisfied_by": [
+        "registry:products"
+      ],
+      "validation": null
+    },
+    "ob.snapshot_bound": {
+      "description": "Each port read is bound to a selected publication snapshot",
+      "satisfied_by": [
+        "cut_admission"
+      ],
+      "validation": null
+    },
+    "ob.identity_unique": {
+      "description": "Canonical selection emits one row per opportunity",
+      "satisfied_by": [
+        "certificate"
+      ],
+      "validation": "a.grain_unique_cohort"
+    },
+    "ob.tie_break_certified": {
+      "description": "Deterministic certified tie-break for equal quote times",
+      "satisfied_by": [
+        "evidence:clm.quote_identity"
+      ],
+      "validation": null
+    },
+    "ob.exclusion_ledger_conservation": {
+      "description": "eligible_all = eligible_mature + immature + quality_excluded",
+      "satisfied_by": [
+        "certificate"
+      ],
+      "validation": "a.conservation"
+    },
+    "ob.semijoin_inner_region": {
+      "description": "Key reduction only on a certified inner/exists region",
+      "satisfied_by": [
+        "certificate"
+      ],
+      "validation": null
+    },
+    "ob.preserve_grain": {
+      "description": "Window reduction emits one outcome per opportunity",
+      "satisfied_by": [
+        "certificate"
+      ],
+      "validation": "a.grain_unique_outcome"
+    },
+    "ob.half_open_window": {
+      "description": "Converting events satisfy the recipe's window interval",
+      "satisfied_by": [
+        "certificate"
+      ],
+      "validation": "a.window_respected",
+      "implies": [
+        "ob.timezone_window"
+      ]
+    },
+    "ob.numerator_le_denominator": {
+      "description": "converted <= eligible_mature for every output row",
+      "satisfied_by": [
+        "certificate"
+      ],
+      "validation": "a.num_le_den"
+    },
+    "ob.additive_algebra": {
+      "description": "Only additive sufficient statistics are merged; ratios recomputed",
+      "satisfied_by": [
+        "evidence:clm.analytical_algebra"
+      ],
+      "validation": null
+    },
+    "ob.copartition_same_key": {
+      "description": "Cohort and events partitioned by the same normalized key, hash version and N",
+      "satisfied_by": [
+        "certificate"
+      ],
+      "validation": "a.partition_cover",
+      "implies": [
+        "ob.identity_unique",
+        "ob.partition_disjoint_cover"
+      ]
+    },
+    "ob.partition_disjoint_cover": {
+      "description": "Every opportunity reaches exactly one partition",
+      "satisfied_by": [
+        "certificate"
+      ],
+      "validation": "a.partition_cover"
+    },
+    "ob.denominator_conservation": {
+      "description": "Merged partition denominators equal the canonical cohort",
+      "satisfied_by": [
+        "certificate"
+      ],
+      "validation": "a.partition_conservation",
+      "implies": [
+        "ob.exclusion_ledger_conservation"
+      ]
+    },
+    "ob.stage_private": {
+      "description": "Stage relation restricted to producing principal and execution",
+      "satisfied_by": [
+        "runtime:stage_registry"
+      ],
+      "validation": "a.stage_registered"
+    },
+    "ob.stage_expiry": {
+      "description": "Stage relation has expiry metadata and a sweeper",
+      "satisfied_by": [
+        "runtime:stage_registry"
+      ],
+      "validation": "a.stage_registered"
+    },
+    "ob.edge_grain_compatible": {
+      "description": "Edge connects producer output grain to an accepted consumer input grain",
+      "satisfied_by": [
+        "compiler:edge_check"
+      ],
+      "validation": null
+    },
+    "ob.contract_version_bound": {
+      "description": "Product contract version bound in the source cut",
+      "satisfied_by": [
+        "cut_admission"
+      ],
+      "validation": null
+    },
+    "ob.complete_validated_only": {
+      "description": "Only complete validated information sets are published",
+      "satisfied_by": [
+        "runtime:publication_protocol"
+      ],
+      "validation": null,
+      "implies": [
+        "ob.access"
+      ]
+    },
+    "ob.coverage_manifest": {
+      "description": "Published set carries a coverage contract",
+      "satisfied_by": [
+        "runtime:publication_protocol"
+      ],
+      "validation": null
+    },
+    "ob.claims_link_validated_data": {
+      "description": "Every numerical claim links to validated data",
+      "satisfied_by": [
+        "runtime:presentation_facts"
+      ],
+      "validation": null
+    },
+    "ob.python_operator_pinned": {
+      "description": "Approved Python operator id, version, code digest and determinism class are pinned and verified",
+      "satisfied_by": [
+        "runtime:python_operator_registry"
+      ],
+      "validation": "a.python_operator_digest"
+    }
   }
 }

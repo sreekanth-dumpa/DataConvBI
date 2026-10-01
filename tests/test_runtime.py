@@ -113,3 +113,36 @@ def test_grain_violation_assertion_blocks(svc):
     finally:
         svc.engine.release(sess)
     assert v["a.grain_unique_cohort"]["passed"] is False and v["a.grain_unique_cohort"]["value"] == 1
+
+
+def test_policy_change_mid_run_aborts_remaining_stages(svc):
+    rid = _planned(svc)
+    svc.engine.faults["delay"] = {'"node":"cohort"': 0.8}
+    ex = svc.execute(rid, variant="staged")
+    time.sleep(0.2)
+    svc.set_policy_mapping("analyst_nc", ["NC", "VA"])  # entitlement epoch changes while cohort runs
+    st = svc.wait(ex, timeout=30)
+    assert st["execution"]["state"] == "failed" and "authorization changed mid-run" in st["execution"]["error"]
+    assert not svc.cache.entries()
+
+
+def test_statement_timeout_cancels_and_fails_honestly(svc):
+    rid = _planned(svc)
+    svc.policy["statement_timeout_seconds"] = 0.3
+    svc.engine.faults["delay"] = {'"node":"cohort"': 2.0}
+    ex = svc.execute(rid, variant="staged")
+    st = svc.wait(ex, timeout=30)
+    assert st["execution"]["state"] == "failed" and "statement timeout" in st["execution"]["error"]
+    assert [a["state"] for a in st["attempts"] if a["node_id"] == "cohort"] == ["timed_out"]
+
+
+def test_stale_fence_cannot_complete_node(make_service):
+    svc = make_service(start_runtime=False)
+    rid = _planned(svc)
+    ex = svc.execute(rid, variant="staged")
+    svc.runtime._start_workflow(ex)
+    claim = svc.runtime._claim("w_test")
+    assert claim is not None
+    stale = dict(claim, fence=claim["fence"] - 1)
+    assert svc.runtime._set_node(stale, "complete", output_relation="stg_fake_x_1") is False  # duplicate/stale completion rejected
+    assert svc.runtime._set_node(claim, "ready") is True

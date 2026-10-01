@@ -37,7 +37,7 @@ def test_trace_chain_detects_tampering(svc):
     svc.ask(DEMO_Q, {"subject": "analyst_nc"})
     anchor = svc.trace.anchor()
     assert svc.trace.verify(anchor)["valid"]
-    svc.store.x("UPDATE trace_events SET event_json = replace(event_json, 'ok', 'OK') WHERE seq = 3")
+    svc.store.x("UPDATE trace_events SET event_json = event_json || ' ' WHERE seq = 3")
     assert not svc.trace.verify(anchor)["valid"]
     assert svc.trace.export_otel(svc.store.one("SELECT request_id FROM trace_events LIMIT 1")["request_id"])
 
@@ -89,3 +89,40 @@ def test_monitoring_snapshot(svc):
     assert m["requests"] == 2 and m["unsupported_route_rate"]["numerator"] == 1
     assert m["missing_receipts"] == 0
     assert any(t["metric"] == "spill_local_bytes" and t["state"] == "unavailable" for t in m["telemetry_availability"])
+
+
+def test_probes_report_linkage_coverage_and_key_sample(svc):
+    from conftest import confirmed
+    rid = confirmed(svc)
+    svc.prepare(rid)
+    stats = svc.plan(rid)["stats"]
+    assert stats["linkage_coverage"]["unmatched"] == 0 and stats["linkage_coverage"]["null_keys"] == 0
+    assert stats["key_sample"]["label"].startswith("approximate")
+    assert (svc.settings.artifacts_dir / "plans").glob("*.physical.json")
+
+
+def test_advice_retired_when_versions_change(svc):
+    out = svc.ask(DEMO_Q, {"subject": "analyst_nc"})
+    case = svc.assess(out["execution_id"])["case"]
+    svc.feedback.transition(case["case_id"], "approved", "r")
+    assert svc.feedback.retire_stale("ipr-compiler/9.9.9", svc.registry.versions) == [case["case_id"]]
+    assert svc.feedback.load(case["case_id"])["promotion"]["state"] == "superseded"
+
+
+def test_retained_result_readable_after_replay_horizon(svc):
+    from datetime import timedelta
+    svc.engine.admin_execute("UPDATE product_publications SET complete=0 WHERE seq=3")
+    svc.ask(DEMO_Q, {"subject": "analyst_nc"})
+    svc.clock.advance(timedelta(days=2))  # past replayable_until, before storage expiry
+    again = svc.ask(DEMO_Q, {"subject": "analyst_nc"})
+    assert again["origin"] == "cache_exact"
+    assert again["receipt"]["availability"].startswith("retained_result_only")
+
+
+def test_shadow_evaluation_moves_case_to_evaluated(svc):
+    out = svc.ask(DEMO_Q, {"subject": "analyst_nc"})
+    case = svc.assess(out["execution_id"])["case"]
+    res = svc.shadow_evaluate(case["case_id"])
+    assert res["all_equivalent"] and len(res["runs"]) == 3
+    assert svc.feedback.load(case["case_id"])["promotion"]["state"] == "evaluated"
+    assert len(svc.cache.entries()) == 1  # shadow runs never publish

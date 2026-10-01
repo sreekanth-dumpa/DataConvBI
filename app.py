@@ -20,6 +20,8 @@ from ipr.config import Settings
 from ipr.intent import Requester
 from ipr.fixture import SUBJECTS
 from ipr.recipe_builder import QUESTIONS
+from ipr.agents.providers import ClaudeProvider, OfflineProvider, ReplayProvider
+from ipr.agents.stability import evaluate_stability
 from ipr.service import Gap, IPRService
 
 DEMO_Q = ("What was the 30-day quote conversion for NC personal auto quotes issued in August 2026 "
@@ -47,11 +49,32 @@ st.caption("Evidence-bound information compiler · reference POC on a synthetic 
 with st.sidebar:
     subject = st.selectbox("Requester (delegated identity)", list(SUBJECTS), index=0)
     st.caption(f"Entitled states: {', '.join(SUBJECTS[subject][0])}")
+    st.divider()
+    st.caption("Agent skills provider")
+    provider_names = ["offline", "claude", "replay"]
+    current = svc.agents.provider.name
+    choice = st.radio("LLM provider", provider_names, index=provider_names.index(current) if current in provider_names else 0,
+                      horizontal=True, help="offline = deterministic skill engine; claude needs ANTHROPIC_API_KEY; replay = frozen proposals")
+    if choice != current:
+        try:
+            svc.agents.provider = {"offline": OfflineProvider, "replay": lambda: ReplayProvider(svc.store),
+                                   "claude": lambda: ClaudeProvider()}[choice]()
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"provider unavailable: {exc}")
+    st.divider()
+    prefs = svc.preferences(subject)
+    with st.expander("Admission preferences"):
+        auto = st.checkbox("Auto-admit within envelope", prefs.get("auto_admit", True))
+        mc = st.number_input("Max simulated credits", value=float(prefs.get("max_credits") or 2.0), step=0.1)
+        ml = st.number_input("Max p90 latency (s)", value=float(prefs.get("max_latency_s") or 900.0), step=10.0)
+        if st.button("Save preferences"):
+            svc.set_preferences(subject, {"auto_admit": auto, "max_credits": mc, "max_latency_s": ml})
     if st.button("Reset conversation"):
         for k in ("request_id", "execution_id", "reuse", "message"):
             ss[k] = None
 
-tabs = st.tabs(["Ask", "Execution", "Plan & obligations", "Cache", "Assess & feedback", "Recipe builder", "Monitoring", "Trace"])
+tabs = st.tabs(["Ask", "Execution", "Plan & obligations", "Agent skills", "Cache", "Assess & feedback", "Recipe builder",
+                "Monitoring", "Trace"])
 
 
 def show_answer(ans: dict) -> None:
@@ -73,9 +96,18 @@ def show_answer(ans: dict) -> None:
             tooltip=list(df.columns))
         if len(dims) > 1:
             chart = chart.encode(xOffset=f"{dims[1]}:N", color=f"{dims[1]}:N")
-        st.altair_chart(chart, use_container_width=True)
-    st.dataframe(pd.DataFrame(facts["by_dimension"]), use_container_width=True)
-    st.text(ans["narrative"])
+        st.altair_chart(chart, width="stretch")
+    st.dataframe(pd.DataFrame(facts["by_dimension"]), width="stretch")
+    nar = ans.get("agent_narrative") or {}
+    if nar.get("headline"):
+        st.markdown(f"**{nar['headline']}**")
+        st.write(nar["narrative"])
+        ag = nar.get("agent", {})
+        st.caption(f"answer-narrator via {ag.get('provider')} · {len(nar.get('claims', []))} numeric claims verified against validated facts"
+                   + (" · fell back to offline engine" if ag.get("fallback_used") else "")
+                   + f" · chart recommendation: {nar.get('chart_recommendation', {}).get('type')}")
+    with st.expander("Deterministic narrative and caveats"):
+        st.text(ans["narrative"])
     st.table(pd.DataFrame(ans["confidence"]))
 
 
@@ -101,13 +133,21 @@ with tabs[0]:
             st.warning("Unsupported meaning: " + ", ".join(res.unsupported) + " — use the Recipe builder tab.")
         if res.advisory_feedback:
             st.info("Approved advisory feedback applies: " + json.dumps(res.advisory_feedback)[:400])
+        mp = rs.meaning_presentation or {}
+        if mp.get("confirmation_summary"):
+            st.info(mp["confirmation_summary"])
+            st.caption(f"clarification-writer via {mp['agent']['provider']} (presentation only; the semantic hash uses the typed intent)")
+        if res.semantic_paths:
+            st.caption("Semantic graph: " + "; ".join(f"{p['dimension']}: {p['status']}" for p in res.semantic_paths))
+        business_q = {q["id"]: q for q in mp.get("questions", [])}
         open_q = [qq for qq in res.questions]
         if open_q:
             with st.form("clarify"):
                 answers = {}
                 for qq in open_q:
                     default = json.dumps(qq.recommended) if isinstance(qq.recommended, dict) else str(qq.recommended or "")
-                    answers[qq.field] = st.text_input(qq.question, default, key=f"q_{qq.id}")
+                    label = business_q.get(qq.id, {}).get("business_question", qq.question)
+                    answers[qq.field] = st.text_input(label, default, key=f"q_{qq.id}")
                 if st.form_submit_button("Answer clarifications"):
                     parsed = {}
                     for k, v in answers.items():
@@ -156,25 +196,42 @@ with tabs[0]:
                 else:
                     est_rows = [{"variant": c["variant"], "admissible": c["admissible"], **c["estimate"].to_dict()} for c in rs.plan["candidates"]]
                     st.dataframe(pd.DataFrame(est_rows)[["variant", "admissible", "latency_p50_s", "latency_p90_s", "credits_low",
-                                                         "credits_high", "stage_writes", "feasible", "objective"]], use_container_width=True)
+                                                         "credits_high", "stage_writes", "feasible", "objective"]], width="stretch")
                     st.caption(f"Selected: {rs.plan['selected']['variant']} · Pareto frontier: {rs.plan['frontier']} · "
                                "credits are simulated credit-equivalents (admission proxy, not invoice ceilings)")
                     variant = st.selectbox("Variant", [c["variant"] for c in rs.plan["candidates"] if c["admissible"]],
                                            index=[c["variant"] for c in rs.plan["candidates"] if c["admissible"]].index(rs.plan["selected"]["variant"]))
+                    st.caption(f"Selection: {rs.plan.get('selection_reason')} · learned selector: {rs.plan['learned_selection']['mode']}")
+                    adm = svc.admission_decision(rid, variant)
+                    if adm["reasons"]:
+                        st.warning("Outside your admission envelope: " + "; ".join(adm["reasons"]))
+                    defer = st.checkbox("Defer start by 1 hour (queue)")
                     if ss.execution_id is None and st.button("Execute", type="primary"):
-                        ss.execution_id = svc.execute(rid, variant=variant)
+                        from datetime import timedelta
+                        later = (svc.clock.now() + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ") if defer else None
+                        ss.execution_id = svc.execute(rid, variant=variant, defer_until=later,
+                                                      admission_basis="explicit_choice")
                         st.rerun()
     if ss.execution_id:
         stat = svc.runtime.status(ss.execution_id)
         state = stat["execution"]["state"]
         st.write(f"Execution `{ss.execution_id}` — **{state}**")
-        if state in ("admitted", "running"):
+        if state in ("admitted", "running", "queued"):
             if st.button("Cancel execution"):
                 svc.cancel(ss.execution_id)
             time.sleep(0.3)
             st.rerun()
         elif state == "succeeded":
             show_answer(svc.result(ss.execution_id))
+            c1, c2 = st.columns(2)
+            if c1.button("Show result page 1 (re-authorized read)"):
+                st.dataframe(pd.DataFrame(svc.page_result(ss.execution_id, {"subject": subject}, 0, 50)["rows"]), width="stretch")
+            if c2.button("Export governed CSV"):
+                try:
+                    exp = svc.export_result(ss.execution_id, {"subject": subject})
+                    st.success(f"Exported {exp['manifest']['rows']} rows → {exp['path']}")
+                except Gap as g:
+                    st.error(str(g))
         else:
             st.error(stat["execution"]["error"])
 
@@ -185,9 +242,9 @@ with tabs[1]:
         st.json(stat["execution"], expanded=False)
         st.dataframe(pd.DataFrame([{k: v for k, v in n.items() if k != "observations"} |
                                    {"rows": (n["observations"] or {}).get("rows"), "elapsed_ms": (n["observations"] or {}).get("elapsed_ms")}
-                                   for n in stat["nodes"]]), use_container_width=True)
+                                   for n in stat["nodes"]]), width="stretch")
         st.dataframe(pd.DataFrame([{k: a[k] for k in ("attempt_id", "node_id", "state", "query_id", "query_tag", "output_relation")}
-                                   for a in stat["attempts"]]), use_container_width=True)
+                                   for a in stat["attempts"]]), width="stretch")
         r = svc.store.one("SELECT receipt_json FROM receipts WHERE execution_id=?", (ss.execution_id,))
         if r:
             with st.expander("Execution receipt"):
@@ -209,7 +266,7 @@ with tabs[2]:
             st.dataframe(pd.DataFrame([{"id": k, "status": v["status"], "severity": v["severity"],
                                         "origins": ", ".join(o["kind"] + ":" + o["ref"] for o in v["origins"])[:120],
                                         "validation": v["validation"], "reason": v["reason"]} for k, v in ob["obligations"].items()]),
-                         use_container_width=True)
+                         width="stretch")
         with st.expander("Certificate"):
             st.json(sel["certificate"])
         with st.expander("Physical SQL (selected)"):
@@ -219,19 +276,47 @@ with tabs[2]:
                     st.code(n["sql"], language="sql")
         with st.expander("Probe log"):
             st.json(pl["stats"].get("probe_log"))
+        with st.expander("Agent proposals (plan-proposer, obligation-proposer, probe-advisor)"):
+            st.json(pl["agents"])
+        with st.expander("Child graphs and EXPLAIN planning information"):
+            st.json(sel["physical"].get("child_graphs"))
+            st.json(sel.get("explain", {}))
+        with st.expander("Learned selection"):
+            st.json(pl["learned_selection"])
     elif rid and svc.requests[rid].resolution:
         st.json(svc.requests[rid].resolution.to_dict()["obligations_a"] or {})
     else:
         st.info("No plan yet.")
 
-# --------------------------------------------------------------------- Cache
+# --------------------------------------------------------------------- Agent skills
 with tabs[3]:
-    st.dataframe(pd.DataFrame(svc.cache.entries()), use_container_width=True)
+    st.caption(f"Provider: **{svc.agents.provider.name}** · agents propose; the compiler, guards, validators and policies decide.")
+    for name, sk in svc.agents.skills.items():
+        with st.expander(f"{name} @ {sk.version} — {sk.phase} · {sk.authority}"):
+            st.write(sk.description)
+            st.markdown("**May:** " + "; ".join(sk.may))
+            st.markdown("**May not:** " + "; ".join(sk.may_not))
+            st.code(sk.system_prompt, language="markdown")
+            st.json(sk.schema, expanded=False)
+    rows = svc.agents.invocations(request_id=ss.request_id) if ss.request_id else svc.agents.invocations(limit=50)
+    if rows:
+        st.subheader("Invocation receipts")
+        st.dataframe(pd.DataFrame([{k: r[k] for k in ("skill", "provider", "model", "fallback_used", "fallback_reason", "latency_ms",
+                                                      "prompt_hash", "response_hash")} for r in rows]), width="stretch")
+    if ss.request_id and st.button("Check proposal stability (intent-interpreter x5, concurrency 3)"):
+        st.json(evaluate_stability(svc.agents, "intent-interpreter",
+                                   {"text": svc.requests[ss.request_id].record.raw_text,
+                                    "dimension_vocabulary": sorted(svc.semantic_dimension_vocabulary()),
+                                    "today_local": svc.clock.now_z()[:10]}, repeats=5, concurrency=3))
+
+# --------------------------------------------------------------------- Cache
+with tabs[4]:
+    st.dataframe(pd.DataFrame(svc.cache.entries()), width="stretch")
     if st.button("Evict expired entries"):
         st.write(svc.cache.evict_expired(), "evicted")
 
 # --------------------------------------------------------------------- Assess
-with tabs[4]:
+with tabs[5]:
     if ss.execution_id and svc.runtime.status(ss.execution_id)["execution"]["state"] == "succeeded":
         fb = st.text_area("Your feedback (stored as a data item)")
         cmp = st.checkbox("Replay all admitted variants on the same cut (plan equivalence)")
@@ -251,32 +336,43 @@ with tabs[4]:
             st.rerun()
 
 # --------------------------------------------------------------------- Recipe builder
-with tabs[5]:
+with tabs[6]:
     st.caption("Drafts are never certified by being generated. No user SQL is accepted.")
+    logic = st.text_area("Business logic in your words",
+                         "Share of quotes that bind within 30 local calendar days, counted once per submission, excluding binds cancelled in the window",
+                         key="rb_logic")
+    if st.button("Draft answers with recipe-drafter skill"):
+        ss.rb_proposal = svc.draft_recipe_answers(logic)
+    proposal = ss.get("rb_proposal")
+    proposed = {a["question_id"]: a["option"] for a in (proposal or {}).get("answers", [])}
+    if proposal:
+        st.caption(f"Agent proposal via {proposal['agent']['provider']}; unresolved: {proposal['unresolved']} — review every answer.")
     with st.form("builder"):
-        title = st.text_input("Recipe title", "Net quote conversion")
-        logic = st.text_area("Business logic in your words", "Share of quotes that bind within 30 days, excluding binds cancelled in the window")
+        title = st.text_input("Recipe title", (proposal or {}).get("title") or "Net quote conversion")
         answers = {}
         for qq in QUESTIONS:
-            answers[qq["id"]] = st.radio(qq["question"], list(qq["options"]), format_func=lambda k, q=qq: q["options"][k], key=f"rb_{qq['id']}")
+            opts = list(qq["options"])
+            idx = opts.index(proposed[qq["id"]]) if qq["id"] in proposed else 0
+            answers[qq["id"]] = st.radio(qq["question"] + (" (agent proposal)" if qq["id"] in proposed else " (unresolved)"), opts, index=idx,
+                                         format_func=lambda k, q=qq: q["options"][k], key=f"rb_{qq['id']}")
         if st.form_submit_button("Generate draft"):
-            d = svc.builder.build_draft(logic, answers, title=title, owner=subject, dimensions=["product_version"])
+            d = svc.build_recipe_draft(logic, answers, title=title, owner=subject, dimensions=["product_version"], agent_proposal=proposal)
             st.json(d["installed_algebra_match"])
             st.caption(f"Saved {d['draft_ref']}")
     st.dataframe(pd.DataFrame([{k: d[k] for k in ("id", "version", "status", "title")} for d in svc.builder.drafts()]),
-                 use_container_width=True)
+                 width="stretch")
 
 # --------------------------------------------------------------------- Monitoring
-with tabs[6]:
+with tabs[7]:
     snap = svc.monitoring()
     for a in snap["alerts"]:
         st.warning(a)
     st.json(snap["metrics"])
 
 # --------------------------------------------------------------------- Trace
-with tabs[7]:
+with tabs[8]:
     v = svc.trace.verify()
     (st.success if v["valid"] else st.error)(json.dumps(v))
     if ss.request_id:
         st.dataframe(pd.DataFrame([{k: e.get(k) for k in ("seq", "stage", "status", "execution_id", "hash")}
-                                   for e in svc.trace.events(request_id=ss.request_id)]), use_container_width=True)
+                                   for e in svc.trace.events(request_id=ss.request_id)]), width="stretch")

@@ -177,6 +177,7 @@ def build_physical(logical: dict[str, Any], variant: str, stats: dict[str, Any],
             final = "metric_stats"
         else:
             final = _partition_suffix(nodes, params, dims, n_partitions, cohort_est, out_est, labelled=True, dialect=d)
+    annotate_child_graphs(nodes, variant)
     nodes.append({"id": "validate", "kind": "validate", "operator": "assert", "depends_on": [n["id"] for n in nodes],
                   "final_node": final, "assertions": ["a.stage_registered"], "materialization": None, "checkpoint": False,
                   "resource_class": "XSMALL", "envelope": None, "params": {"cutoff": params["cutoff"]}})
@@ -190,6 +191,7 @@ def build_physical(logical: dict[str, Any], variant: str, stats: dict[str, Any],
         "hash_version": HASH_VERSION if variant == "partitioned" else None, "final_node": final, "nodes": nodes,
         "rewrite_rules": rewrite_rules_for(variant),
     }
+    phys["child_graphs"] = child_graph_summary(phys)
     validate_graph(phys)
     for n in phys["nodes"]:
         if n["kind"] == "sql_ctas":
@@ -248,6 +250,12 @@ def replan_suffix(physical: dict[str, Any], completed: set[str], new_partitions:
     nodes = copy.deepcopy(keep)
     final = _partition_suffix(nodes, params, dims, new_partitions, cohort_est, out_est, labelled=False,
                               dialect=Dialect(physical["dialect"]), suffix_tag=tag)
+    annotate_child_graphs(nodes, "partitioned")
+    for old_py in [n for n in physical["nodes"] if n["kind"] == "python_op"]:
+        py = copy.deepcopy(old_py)
+        py["depends_on"] = [final]
+        py["final_node"] = final
+        nodes.append(py)
     for kind, op in (("validate", "assert"), ("publish", "publish_information_set"), ("present", "present")):
         old = next(n for n in physical["nodes"] if n["id"] == kind)
         new = copy.deepcopy(old)
@@ -259,12 +267,81 @@ def replan_suffix(physical: dict[str, Any], completed: set[str], new_partitions:
     new_plan.update({"nodes": nodes, "final_node": final, "variant": f"{physical['variant']}+adapted_partitioned",
                      "n_partitions": new_partitions, "hash_version": HASH_VERSION, "adaptation_version": version,
                      "rewrite_rules": sorted(set(physical["rewrite_rules"]) | {"rw.copartition_window_reduction_v1", "rw.combine_partitions_v1"})})
+    new_plan["child_graphs"] = child_graph_summary(new_plan)
     validate_graph(new_plan)
     for n in new_plan["nodes"]:
         if n["kind"] == "sql_ctas":
             validate_sql(n["sql"], new_plan["dialect"])
     new_plan["physical_fingerprint"] = fingerprint({k: v for k, v in new_plan.items() if k != "compiler_version"})
     return new_plan
+
+
+CHILD_GRAPHS = {
+    "quote_cohort_dag": {"purpose": "canonical opportunity selection, maturity and exclusion ledger", "output_grain": ["opportunity_id"]},
+    "linkage_dag": {"purpose": "resolve bind events to canonical opportunities; key-reduce to mature cohort", "output_grain": ["bind_event_id"]},
+    "metric_dag": {"purpose": "exact window reduction and additive sufficient statistics", "output_grain": "output_dimensions"},
+    "fused_metric_dag": {"purpose": "single statement: cohort, linkage, window reduction and aggregation", "output_grain": "output_dimensions"},
+    "information_path": {"purpose": "approved Python operators, validation, cache publication and presentation", "output_grain": "output_dimensions"},
+}
+
+
+def annotate_child_graphs(nodes: list[dict[str, Any]], variant: str) -> None:
+    """SQL decomposition DAGs composed into one information-path DAG (section 10.1)."""
+    for n in nodes:
+        if n.get("child_graph"):
+            continue
+        if n["id"] == "fused_metric":
+            n["child_graph"] = "fused_metric_dag"
+        elif n["id"] == "cohort":
+            n["child_graph"] = "quote_cohort_dag"
+        elif n["id"] == "linked_binds":
+            n["child_graph"] = "linkage_dag"
+        elif n["kind"] == "sql_ctas":
+            n["child_graph"] = "metric_dag"
+        else:
+            n["child_graph"] = "information_path"
+
+
+def child_graph_summary(phys: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for n in phys["nodes"]:
+        g = n.get("child_graph") or "information_path"
+        n["child_graph"] = g
+        out.setdefault(g, {**CHILD_GRAPHS[g], "nodes": []})["nodes"].append(n["id"])
+    ids = {n["id"]: n["child_graph"] for n in phys["nodes"]}
+    edges = sorted({(ids[d], n["child_graph"]) for n in phys["nodes"] for d in n["depends_on"] if ids[d] != n["child_graph"]})
+    out["_edges"] = [f"{a}->{b}" for a, b in edges]
+    return out
+
+
+def attach_python_operators(phys: dict[str, Any], selections: list[dict[str, Any]]) -> dict[str, Any]:
+    """Insert approved Python operator nodes after the final aggregate (agent selects id + bounded params)."""
+    from .pyoperators import PY_OPERATORS, validate_params
+    if not selections:
+        return phys
+    new = copy.deepcopy(phys)
+    final = new["final_node"]
+    pre = [n for n in new["nodes"] if n["kind"] in ("sql_ctas",)]
+    py_nodes = []
+    for sel in selections:
+        op_id = sel["operator_id"]
+        spec = PY_OPERATORS[op_id]
+        py_nodes.append({"id": f"py_{op_id}", "kind": "python_op", "operator": "approved_python_operator", "operator_id": op_id,
+                         "operator_version": spec["version"], "code_digest": spec["code_digest"], "determinism": spec["determinism"],
+                         "tolerance": spec["tolerance"], "params": validate_params(op_id, {"confidence_level": sel["confidence_level"]}),
+                         "depends_on": [final], "final_node": final, "materialization": None, "checkpoint": False,
+                         "resource_class": None, "envelope": None, "child_graph": "information_path", "assertions": ["a.python_operator_digest"]})
+    tail = [n for n in new["nodes"] if n["kind"] not in ("sql_ctas",)]
+    for n in tail:
+        if n["id"] == "validate":
+            n["depends_on"] = [x["id"] for x in pre + py_nodes]
+    new["nodes"] = pre + py_nodes + tail
+    new["python_operators"] = [{k: v for k, v in n.items() if k in ("operator_id", "operator_version", "code_digest", "params", "determinism")}
+                               for n in py_nodes]
+    new["child_graphs"] = child_graph_summary(new)
+    validate_graph(new)
+    new["physical_fingerprint"] = fingerprint({k: v for k, v in new.items() if k not in ("compiler_version", "physical_fingerprint")})
+    return new
 
 
 def rewrite_rules_for(variant: str) -> list[str]:

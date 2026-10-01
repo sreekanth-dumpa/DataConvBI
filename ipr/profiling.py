@@ -21,6 +21,8 @@ PROBES = {
     "duplicate_canonical_key": {"benefit": "verifies one canonical row per opportunity before staging", "est_seconds": 0.5},
     "bind_multiplicity": {"benefit": "bind fan-out and linked-row volume decide partitioning", "est_seconds": 0.6},
     "heavy_hitters": {"benefit": "heavy keys decide skew isolation", "est_seconds": 0.6},
+    "linkage_coverage": {"benefit": "unmatched-key fraction and null keys decide whether the join is defensible", "est_seconds": 0.5},
+    "key_sample": {"benefit": "deterministic key-aware sample shows complete branch/bind histories per opportunity", "est_seconds": 0.4},
 }
 
 
@@ -63,10 +65,21 @@ class Profiler:
             return base + "SELECT n, COUNT(*) AS keys FROM (SELECT opportunity_id, COUNT(*) AS n FROM linked GROUP BY opportunity_id) GROUP BY n ORDER BY n"
         if name == "heavy_hitters":
             return base + "SELECT opportunity_id, COUNT(*) AS n FROM linked GROUP BY opportunity_id ORDER BY n DESC, opportunity_id LIMIT 5"
+        if name == "linkage_coverage":
+            from .sqlgen import BIND_PORT, QUOTE_PORT, knowledge_filter
+            return (f"SELECT COUNT(*) AS binds, SUM(CASE WHEN b.quote_branch_id IS NULL THEN 1 ELSE 0 END) AS null_keys, "
+                    f"SUM(CASE WHEN q.quote_branch_id IS NULL THEN 1 ELSE 0 END) AS unmatched "
+                    f"FROM {BIND_PORT} b LEFT JOIN (SELECT quote_branch_id FROM {QUOTE_PORT} q WHERE {knowledge_filter('q')}) q "
+                    f"ON q.quote_branch_id = b.quote_branch_id WHERE {knowledge_filter('b')}")
+        if name == "key_sample":
+            # key-aware: select deterministic business keys, then pull their complete histories (not isolated rows)
+            return base + (f"SELECT c.opportunity_id, (SELECT COUNT(*) FROM linked l WHERE l.opportunity_id = c.opportunity_id) AS binds "
+                           f"FROM cohort c WHERE {dialect.hash_mod('c.opportunity_id', '50')} = 0 ORDER BY c.opportunity_id")
         raise KeyError(name)
 
     def collect(self, session, logical: dict[str, Any], cut, access, discovery_target: float, max_probes: int,
-                registered: dict[str, Any], force_probes: bool = False) -> dict[str, Any]:
+                registered: dict[str, Any], force_probes: bool = False,
+                ranking: list[tuple[str, bool]] | None = None) -> dict[str, Any]:
         """Return statistics plus a per-probe decision log."""
         scope_hash = fingerprint(logical["params"] | {"identity": logical["algebra"]["identity"]})
         stats = dict(registered)
@@ -75,7 +88,10 @@ class Profiler:
         spent = 0.0
         dialect = Dialect(session.engine.dialect if hasattr(session, "engine") else "sqlite")
         identity = logical["algebra"]["identity"]
-        for name, spec in PROBES.items():
+        order = [n for n, _ in ranking] if ranking else list(PROBES)
+        advised = dict(ranking or [])
+        for name in order:
+            spec = PROBES[name]
             existing = self.lookup(name, scope_hash, cut.fingerprint, access.reuse_key)
             if existing:
                 log.append({"probe": name, "decision": "reused_existing_profile", "collected_at": existing["collected_at"]})
@@ -84,6 +100,8 @@ class Profiler:
             # value of information: registered estimates are approximate; probes
             # matter when the decision could flip (uncertainty band spans thresholds).
             value = 1.0 if (registered.get("uncertainty", 1) >= 2 or force_probes) else 0.0
+            if ranking is not None and not advised.get(name, True) and not force_probes:
+                value = 0.0  # probe-advisor: result could not change a decision
             adm = self.broker.admit_probe(discovery_target - spent, spec["est_seconds"])
             if not adm["admitted"] and adm.get("alternatives"):
                 # prefer a smaller eligible resource class over no probe
@@ -104,7 +122,7 @@ class Profiler:
             spent += adm["required_credits"]
             issued += 1
             value_obj = self._summarize(name, rows)
-            value_obj.update({"exact": True, "source_cut": cut.fingerprint, "predicate_scope": scope_hash,
+            value_obj.update({"exact": value_obj.get("exact", True), "source_cut": cut.fingerprint, "predicate_scope": scope_hash,
                               "staleness_policy": "valid for this source cut only"})
             self.store.x("INSERT OR REPLACE INTO profiles VALUES (?,?,?,?,?,?,?,?,?)", (
                 self._key(name, scope_hash, cut.fingerprint, access.reuse_key), "quote+bind", cut.fingerprint, scope_hash, name,
@@ -142,6 +160,15 @@ class Profiler:
                     "max": max((r["n"] for r in rows), default=0)}
         if name == "heavy_hitters":
             return {"top": rows}
+        if name == "linkage_coverage":
+            r = rows[0] if rows else {"binds": 0, "null_keys": 0, "unmatched": 0}
+            n = r["binds"] or 0
+            return {"binds": n, "null_keys": r["null_keys"] or 0, "unmatched": r["unmatched"] or 0,
+                    "unmatched_fraction": None if not n else round((r["unmatched"] or 0) / n, 6)}
+        if name == "key_sample":
+            k = len(rows)
+            return {"sampled_keys": k, "sample_rate": 0.02, "mean_binds_per_sampled_key": round(sum(r["binds"] for r in rows) / k, 4) if k else None,
+                    "exact": False, "label": "approximate: deterministic 1-in-50 key-aware sample"}
         return {"rows": rows}
 
     @staticmethod
@@ -158,3 +185,7 @@ class Profiler:
             stats["bind_multiplicity_max"] = v["max"]
         elif name == "heavy_hitters":
             stats["heavy_hitters"] = v["top"]
+        elif name == "linkage_coverage":
+            stats["linkage_coverage"] = {k: v[k] for k in ("binds", "null_keys", "unmatched", "unmatched_fraction")}
+        elif name == "key_sample":
+            stats["key_sample"] = {k: v[k] for k in ("sampled_keys", "sample_rate", "mean_binds_per_sampled_key", "label")}

@@ -32,3 +32,9 @@ def test_ui_workflow(tmp_path, monkeypatch):
         at.run(timeout=60)
     assert any(m.label == "Conversion (mature)" for m in at.metric)
     assert not at.exception
+    assert any("of mature opportunities converted" in m.value for m in at.markdown)  # answer-narrator headline
+    assert any("answer-narrator via offline" in c.value for c in at.caption)
+    assert sum(1 for e in at.expander if "@ 1.0.0" in e.label) == 10  # agent skills tab lists every SKILL.md
+    _click(at, "Draft answers with recipe-drafter skill")
+    assert not at.exception
+    assert any("Agent proposal via offline" in c.value for c in at.caption)

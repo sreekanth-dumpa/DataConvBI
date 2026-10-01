@@ -56,7 +56,13 @@ def snapshot(store: Store, clock, alert_policy: dict[str, float] | None = None) 
             est = (env["expected"][0] + env["expected"][1]) / 2
             if est > 0:
                 qerr.append(max(est / env["observed"], env["observed"] / est))
+    try:
+        agent_rows = store.q("SELECT skill, provider, COUNT(*) c, SUM(fallback_used) f, AVG(latency_ms) l FROM agent_invocations GROUP BY skill, provider")
+    except Exception:  # noqa: BLE001 - table created lazily by the agent runner
+        agent_rows = []
     metrics = {
+        "agent_invocations": [{"skill": r["skill"], "provider": r["provider"], "invocations": r["c"], "fallbacks": r["f"],
+                               "mean_latency_ms": round(r["l"] or 0, 3)} for r in agent_rows],
         "requests": n_req,
         "clarification_rate": _pct(clar, n_req),
         "unsupported_route_rate": _pct(unsup, n_req),

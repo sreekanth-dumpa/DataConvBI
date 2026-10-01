@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import time
+from pathlib import Path
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,7 +23,8 @@ from .access import AccessProvider
 from .assessment import build_document, compute_metrics, gate_vector, new_case, recommendations
 from .cache import InformationCache, rollup
 from .canonical import fingerprint, short
-from .compiler import CompileError, build_logical, build_physical, check_edges, replan_suffix
+from .compiler import CompileError, attach_python_operators, build_logical, build_physical, check_edges, replan_suffix
+from .pyoperators import PY_OPERATORS, descriptor as py_descriptor, validate_params as py_validate_params, verify_digest
 from .config import Settings
 from .cost import BudgetBroker, Calibration, CostModel, WarehousePool, choose
 from .cuts import bind_ports, select_cut, temporal_admission
@@ -45,7 +47,10 @@ from .intent import (
     semantic_hash,
     semantic_payload,
 )
-from .llm import IntentProposer, RuleBasedProposer
+from .agents import AgentRunner
+from .agents.guards import (clarification_guard, diagnosis_guard, drafter_guard, interpreter_guard, narration_guard,
+                            obligation_guard, plan_guard, probe_guard)
+from .agents.providers import LLMProvider, default_provider
 from .monitoring import snapshot
 from .obligations import ObligationCompiler
 from .oracle import oracle
@@ -59,7 +64,7 @@ from .store import Store, dumps, loads
 from .trace import TraceStore
 from .validation import final_assertions, stage_registration
 
-RUNTIME_CAPS = {"stage_registry", "publication_protocol", "presentation_facts"}
+RUNTIME_CAPS = {"stage_registry", "publication_protocol", "presentation_facts", "python_operator_registry"}
 
 
 class Gap(Exception):
@@ -78,10 +83,11 @@ class RequestState:
     plan: dict[str, Any] | None = None
     executions: list[str] = field(default_factory=list)
     interpretation: dict[str, Any] | None = None
+    meaning_presentation: dict[str, Any] | None = None
 
 
 class IPRService:
-    def __init__(self, settings: Settings | None = None, proposer: IntentProposer | None = None,
+    def __init__(self, settings: Settings | None = None, llm_provider: LLMProvider | None = None,
                  certify_access_classes: bool = False, start_runtime: bool = True):
         self.settings = settings or Settings()
         s = self.settings
@@ -94,7 +100,6 @@ class IPRService:
         self.trace = TraceStore(self.store, self.clock)
         self.access = AccessProvider(self.engine, certify_classes=certify_access_classes)
         self.cache = InformationCache(self.store, self.access, self.clock, s.cache_ttl_days)
-        self.grounder = Grounder(self.registry, self.clock)
         self.obligations = ObligationCompiler(self.registry)
         self.policy = self.registry.budget_policies["warehouse_admission_v2"]
         self.pool = WarehousePool(self.policy["auto_suspend_seconds"])
@@ -104,14 +109,21 @@ class IPRService:
         self.profiler = Profiler(self.store, self.broker, self.clock)
         self.feedback = FeedbackDirectory(s.feedback_dir)
         self.builder = RecipeBuilder(s.recipes_dir / "drafts")
-        self.proposer = proposer or RuleBasedProposer()
+        self.agents = AgentRunner(self.store, self.trace, self.clock, llm_provider or default_provider(self.store))
+        from .semantic_graph import SemanticGraph
+        from .selector import VariantSelector
+        self.selector = VariantSelector(self.store)
+        self.semantic_graph = SemanticGraph()
+        self.grounder = Grounder(self.registry, self.clock, agents=self.agents, semantic_graph=self.semantic_graph)
         self.runtime = OnlineRuntime(self.store, self.engine, self.trace, self.clock, workers=s.workers,
                                      lease_seconds=s.lease_seconds, heartbeat_seconds=s.heartbeat_seconds,
                                      poll_seconds=s.poll_seconds, stage_ttl_hours=s.stage_ttl_hours,
                                      max_attempts=self.policy["max_attempts_per_node"])
-        self.runtime.handlers = {"validate": self._h_validate, "publish": self._h_publish, "present": self._h_present}
+        self.runtime.handlers = {"validate": self._h_validate, "publish": self._h_publish, "present": self._h_present,
+                                 "python_op": self._h_python}
         self.runtime.adaptation_policy = self._adaptation_policy
         self.runtime.on_stage_cost = self._stage_cost
+        self.runtime.on_node_admission = self._node_admission
         self.adaptation = {"enabled": True, "min_cohort_rows": 20000, "partitions": 4, "force": False, "margin": 0.2}
         self.requests: dict[str, RequestState] = {}
         self._exec_ctx: dict[str, dict[str, Any]] = {}
@@ -126,10 +138,23 @@ class IPRService:
     def interpret(self, text: str, requester: Requester | dict, *, conversation_id: str | None = None,
                   parent_request_id: str | None = None, form: dict[str, Any] | None = None) -> RequestState:
         requester = requester if isinstance(requester, Requester) else Requester(**requester)
-        body, assumptions, receipt = self.proposer.propose(text)
-        if form:
-            body.update({k: v for k, v in form.items() if v is not None})
         rid = new_request_id()
+        vocab = sorted(self.semantic_dimension_vocabulary())
+        proposal = self.agents.invoke("intent-interpreter", {"text": text, "dimension_vocabulary": vocab,
+                                                             "today_local": self.clock.now_z()[:10]},
+                                      guard=interpreter_guard(vocab), request_id=rid)
+        o = proposal.output
+        body: dict[str, Any] = {
+            "metric": o["metric"], "scope": {k: v for k, v in (("state", o["state"]), ("lob", o["lob"])) if v},
+            "cohort": {"start": o["cohort_start"], "end_exclusive": o["cohort_end_exclusive"]} if o["cohort_start"] and o["cohort_end_exclusive"] else None,
+            "window": {"value": o["window_days"]} if o["window_days"] else None,
+            "knowledge_cutoff_local_date": o["knowledge_cutoff_local_date"],
+            # unknown breakdowns stay in the request so grounding reports them as unsupported meaning
+            "dimensions": list(o["dimensions"]) + [d.replace(" ", "_") for d in o["unknown_dimensions"]],
+            "requested_recipe": o["requested_definition"], "cut_request": {"mode": o["cut_mode"]},
+        }
+        assumptions = list(o["assumptions"])
+        receipt = proposal.receipt()
         ib = IntentBody(
             metric=body.get("metric"), scope=body.get("scope", {}),
             cohort=Cohort(**body["cohort"]) if body.get("cohort") else None,
@@ -144,14 +169,14 @@ class IPRService:
         (self.settings.artifacts_dir / "requests").mkdir(parents=True, exist_ok=True)
         (self.settings.artifacts_dir / "requests" / f"{rid}.txt").write_text(text)
         st = RequestState(record=rec, pending_cutoff_date=body.get("knowledge_cutoff_local_date") if not body.get("knowledge_cutoff") else None,
-                          interpretation=receipt.model_dump())
+                          interpretation=receipt)
         self.requests[rid] = st
         self.store.x("INSERT INTO requests VALUES (?,?,?,?,?,?,?)", (rid, rec.conversation_id, parent_request_id, requester.subject, text,
-                                                                    self.clock.now_z(), dumps(receipt.model_dump())))
+                                                                    self.clock.now_z(), dumps(receipt)))
         self._persist_intent(rec, "draft")
         self.trace.span(rid, "interpret", decision={"draft_fields": sorted(k for k, v in body.items() if v)},
-                        output_refs={"interpretation_receipt": receipt.model_dump()}, status="proposed",
-                        actor={"type": "agent" if receipt.interpreter != "rule_based" else "service", "version": receipt.interpreter})
+                        output_refs={"interpretation_receipt": receipt}, status="proposed",
+                        actor={"type": "agent", "version": "intent-interpreter", "provider": receipt["provider"]})
         return st
 
     def _persist_intent(self, rec: IntentRecord, status: str) -> None:
@@ -170,12 +195,14 @@ class IPRService:
             res = self.grounder.ground(st.record)
         if res.route:
             self._bind_definitions(st.record, res)
+            self.feedback.retire_stale(COMPILER_VERSION, self.registry.versions)
             res.advisory_feedback = self.feedback.retrieve(res.route["recipe_id"], st.record.intent.domains, st.record.intent.scope)
         # merge open questions into the record (material clarifications)
         known = {c.field for c in st.record.clarifications if c.status == "resolved"}
         st.record.clarifications = [c for c in st.record.clarifications if c.status == "resolved"] + \
             [q for q in res.questions if q.field not in known]
         st.resolution = res
+        st.meaning_presentation = self._write_clarifications(st, res)
         self.store.x("INSERT INTO resolutions VALUES (?,?,?,?)", (request_id, st.record.version, dumps(res.to_dict()), self.clock.now_z()))
         if res.obligations_a:
             self.store.x("INSERT OR REPLACE INTO obligation_manifests VALUES (?,?,?,?,?,?)",
@@ -188,6 +215,22 @@ class IPRService:
                                      "obligations_a": sorted(res.obligations_a.obligations) if res.obligations_a else []},
                         input_refs={"registry_versions": self.registry.versions})
         return res
+
+    def _write_clarifications(self, st: "RequestState", res: Resolution) -> dict[str, Any] | None:
+        """clarification-writer skill: business phrasing + confirmation summary (presentation only)."""
+        if not res.route and not res.questions:
+            return None
+        intent = st.record.intent.model_dump(mode="json")
+        intent.pop("output", None)
+        qs = [{"id": q.id, "field": q.field, "question": q.question, "options": q.options, "recommended": q.recommended}
+              for q in res.questions]
+        r = self.agents.invoke("clarification-writer", {"questions": qs, "intent": intent},
+                               guard=clarification_guard([q["id"] for q in qs], {q["id"]: len(q["options"]) for q in qs}, intent),
+                               request_id=st.record.request_id)
+        return {**r.output, "agent": r.receipt()}
+
+    def semantic_dimension_vocabulary(self) -> set[str]:
+        return {a for a in self.semantic_graph.attribute_names() if a not in ("state", "lob")}
 
     def _bind_definitions(self, rec: IntentRecord, res: Resolution) -> None:
         b = res.bound_fields
@@ -300,6 +343,12 @@ class IPRService:
         if violations:
             raise Gap("reuse_validation_failed", "cached information set failed reuse validation")
         cut = p["cut"]
+        saved = self.store.one("SELECT p.plan_json FROM executions e JOIN physical_plans p ON p.physical_id=e.physical_id "
+                               "WHERE e.execution_id=?", (d.entry["manifest"]["producer_execution_id"],))
+        py_ops = (loads(saved["plan_json"]).get("python_operators") or []) if saved else []
+        for op in py_ops:  # approved operators re-run deterministically on cached sufficient statistics
+            if op["operator_id"] == "wilson_interval" and verify_digest(op["operator_id"], op["code_digest"]):
+                rows = self._attach_intervals(rows, dims, PY_OPERATORS["wilson_interval"]["fn"](rows, op["params"]))
         facts = answer_facts(rows, dims, origin=f"cache_{d.outcome}", information_set_id=d.entry["information_set_id"],
                              cut=cut.to_dict(), intent=rec.intent.model_dump(mode="json"), recipe=recipe)
         op_id = "cacheop_" + uuid.uuid4().hex[:10]
@@ -314,6 +363,7 @@ class IPRService:
         self.store.x("INSERT OR REPLACE INTO receipts VALUES (?,?,?)", (op_id, dumps(receipt), self.clock.now_z()))
         self.trace.span(request_id, "present_from_cache", decision={"information_set_id": d.entry["information_set_id"], "rule": d.rule})
         return {"origin": f"cache_{d.outcome}", "facts": facts, "chart": chart_spec(facts), "narrative": narrative(facts, recipe),
+                "agent_narrative": self._narrate(facts, recipe, request_id),
                 "confidence": confidence_categories(confirmed=True, recipe_status=recipe["status"], cut_mode=cut.cut_mode,
                                                     temporal_ok=True, structural_ok=True),
                 "receipt": receipt}
@@ -344,11 +394,29 @@ class IPRService:
         man_a = st.resolution.obligations_a
         if agent_proposal:
             man_a.merge_agent_proposal(self.registry, **agent_proposal)
+        # obligation-proposer skill: additions only; removals are recorded and rejected
+        ob_prop = self.agents.invoke("obligation-proposer", {
+            "manifest": [{"id": o.id, "description": o.description, "status": o.status} for o in man_a.obligations.values()],
+            "registry_obligations": sorted(self.registry.obligations), "identity": recipe["algebra"]["identity"],
+            "operator_obligations": {op: self.registry.operators[op]["obligations"] for op in {n["operator"] for n in logical["nodes"]}},
+            "plan_nodes": [{"id": n["id"], "operator": n["operator"]} for n in logical["nodes"]], "variants": list(variants)},
+            guard=obligation_guard(set(self.registry.obligations)), request_id=request_id)
+        man_a.merge_agent_proposal(self.registry, add=[a["obligation_id"] for a in ob_prop.output["add"]],
+                                   remove=ob_prop.output["remove"], agent="obligation-proposer")
+        # probe-advisor skill ranks approved probes; the budget broker still admits each one
+        registered = registered_estimates(self.registry, rec)
+        from .profiling import PROBES
+        probe_rank = self.agents.invoke("probe-advisor", {
+            "probes": [{"name": k, "benefit": v["benefit"], "est_seconds": v["est_seconds"]} for k, v in PROBES.items()],
+            "uncertainty": registered["uncertainty"], "statistics": {k: registered[k] for k in ("cohort_rows", "linked_bind_rows")},
+            "decision_thresholds": {"adaptation_min_cohort_rows": self.adaptation["min_cohort_rows"]}},
+            guard=probe_guard(set(PROBES)), request_id=request_id)
         # admitted probes under the requester's identity (after confirmation)
         sess = self.engine.acquire(rec.requester.subject, rec.requester.purpose)
         try:
             stats = self.profiler.collect(sess, logical, cut, access, rec.constraints.discovery_target_credits,
-                                          self.policy["max_probes"], registered_estimates(self.registry, rec), force_probes)
+                                          self.policy["max_probes"], registered, force_probes,
+                                          ranking=[(r["probe"], r["could_change_decision"]) for r in probe_rank.output["ranked"]])
         finally:
             self.engine.release(sess)
         if stats.get("canonical_duplicates"):
@@ -368,6 +436,16 @@ class IPRService:
             candidates.append({"variant": v, "physical": phys, "certificate": cert, "obligations": man_b, "estimate": est,
                                "admissible": cert["admitted"] and not blocking,
                                "blocking": [{"id": b.id, "reason": b.reason} for b in blocking]})
+        # metadata-only EXPLAIN for statements whose inputs are product ports (planning information, not runtime)
+        sess = self.engine.acquire(rec.requester.subject, rec.requester.purpose)
+        try:
+            for c in candidates:
+                c["explain"] = {}
+                for n in c["physical"]["nodes"]:
+                    if n["kind"] == "sql_ctas" and "{{rel:" not in n["sql"] and hasattr(sess, "explain"):
+                        c["explain"][n["id"]] = sess.explain(n["sql"], n["params"], cut=cut.seq_by_port)
+        finally:
+            self.engine.release(sess)
         admissible = [c for c in candidates if c["admissible"]]
         if not admissible:
             raise Gap("no_admissible_path", "No admissible execution path",
@@ -378,6 +456,44 @@ class IPRService:
             raise Gap("budget", "No candidate fits the execution allocation or runtime limit",
                       {"estimates": [c["estimate"].to_dict() for c in admissible]})
         selected = next(c for c in admissible if c["estimate"] is chosen)
+        # plan-proposer skill: operator path from approved operators + variant preference (ties within the frontier)
+        frontier = [e.variant for e in front]
+        approved = [{"id": op, "accepts": self.registry.operators[op]["accepts"], "output_grain": self.registry.operators[op]["output_grain"]}
+                    for op in recipe["operators"] if op in self.registry.operators]
+        plan_prop = self.agents.invoke("plan-proposer", {
+            "intent": {"recipe": recipe["id"], "dimensions": rec.intent.dimensions, "window_days": rec.intent.window.value,
+                       "identity": recipe["algebra"]["identity"]},
+            "approved_operators": approved,
+            "approved_python_operators": [py_descriptor(k) for k in PY_OPERATORS],
+            "stats": {k: stats.get(k) for k in ("cohort_rows", "linked_bind_rows", "bind_multiplicity_p95", "bind_multiplicity_max", "source")},
+            "candidates": [{"variant": c["variant"], "admissible": c["admissible"], "frontier": c["variant"] in frontier,
+                            "latency_p90_s": c["estimate"].latency_p90_s, "credits_high": c["estimate"].credits_high,
+                            "stage_writes": c["estimate"].stage_writes} for c in candidates]},
+            guard=plan_guard({a["id"] for a in approved}, [n["operator"] for n in logical["nodes"]],
+                             [c["variant"] for c in admissible], frontier,
+                             {k: {"params": v["params"]} for k, v in PY_OPERATORS.items()}), request_id=request_id)
+        py_sel = plan_prop.output.get("python_operators", [])
+        if py_sel:  # approved Python operators join every admitted variant; Pass B and certificates are recomputed
+            for c in candidates:
+                c["physical"] = attach_python_operators(c["physical"], py_sel)
+                c["certificate"] = certify_physical(c["physical"], logical, self.registry)
+                c["obligations"] = self.obligations.pass_b(man_a, logical, c["physical"])
+                c["obligations"].evaluate({**base_ctx, "certificate": set(c["certificate"]["certified_obligations"])})
+                c["blocking"] = [{"id": b.id, "reason": b.reason} for b in c["obligations"].blocking()]
+                c["admissible"] = c["admissible"] and c["certificate"]["admitted"] and not c["blocking"]
+        selection_reason = "minimum normalized objective on the Pareto frontier"
+        if plan_prop.output.get("preference_honoured") and plan_prop.output["preferred_variant"] != selected["variant"]:
+            selected = next(c for c in admissible if c["variant"] == plan_prop.output["preferred_variant"])
+            selection_reason = f"agent preference within the frontier: {plan_prop.output['variant_reason']}"
+        # learned selection (Bao-inspired) only after enough comparable receipts; otherwise the rule-based choice stands
+        from .selector import signature as wl_signature
+        sig, feats = wl_signature(recipe["id"], rec.intent.dimensions, stats)
+        learned = self.selector.select(sig, feats, [{"variant": c["variant"], "latency_p90_s": c["estimate"].latency_p90_s,
+                                                     "credits_high": c["estimate"].credits_high} for c in admissible if c["variant"] in frontier],
+                                       baseline=selected["variant"], seed=request_id)
+        if learned["mode"] != "rule_based" and learned["chosen"] != selected["variant"]:
+            selected = next(c for c in admissible if c["variant"] == learned["chosen"])
+            selection_reason = f"learned selector ({learned['mode']}): {learned['reason']}"
         selected["obligations"].freeze()
         plan_id = self._plan_template_key(rec, recipe)
         version = (self.store.one("SELECT MAX(version) AS v FROM logical_plans WHERE plan_id=?", (plan_id,))["v"] or 0) + 1
@@ -402,13 +518,25 @@ class IPRService:
             con.execute("INSERT OR REPLACE INTO obligation_manifests VALUES (?,?,?,?,?,?)",
                         (f"om_{request_id}_B_{plan_id}_{version}", request_id, "B", dumps(selected["obligations"].to_dict()),
                          selected["obligations"].frozen_hash, now))
+        # immutable, content-addressed plan artifacts in governed storage; DB rows reference them by hash
+        art = self.settings.artifacts_dir / "plans"
+        art.mkdir(parents=True, exist_ok=True)
+        (art / f"{short(logical['logical_fingerprint'], 24)}.logical.json").write_text(dumps(logical))
+        for c in candidates:
+            (art / f"{short(c['physical']['physical_fingerprint'], 24)}.physical.json").write_text(
+                dumps({"plan": c["physical"], "certificate": c["certificate"]}))
         st.plan = {"plan_id": plan_id, "version": version, "logical": logical, "candidates": candidates, "selected": selected,
                    "physical_ids": physical_ids, "stats": stats, "frontier": [e.variant for e in front],
-                   "semantic_hash": semantic_hash(rec), "saved_plan_reused": p["saved_plan"]["found"] and p["saved_plan"]["applicable"]}
+                   "semantic_hash": semantic_hash(rec), "saved_plan_reused": p["saved_plan"]["found"] and p["saved_plan"]["applicable"],
+                   "selection_reason": selection_reason, "learned_selection": learned, "workload_signature": sig,
+                   "agents": {"obligation_proposal": {**ob_prop.output, "agent": ob_prop.receipt()},
+                              "probe_ranking": {**probe_rank.output, "agent": probe_rank.receipt()},
+                              "plan_proposal": {**plan_prop.output, "agent": plan_prop.receipt()}}}
         self.trace.span(request_id, "physical_planning", status="proposed",
                         input_refs={"intent_hash": semantic_hash(rec), "evidence_manifest": st.resolution.evidence_manifest.get("selected_claims"),
                                     "stats_source": stats.get("source")},
                         decision={"selected_plan": selected["variant"], "frontier": st.plan["frontier"],
+                                  "reason": selection_reason,
                                   "rejected": [{"plan": c["variant"], "rule": c["blocking"] or c["estimate"].infeasible_reasons or "dominated/objective"}
                                                for c in candidates if c is not selected]},
                         output_refs={"logical_ir_hash": logical["logical_fingerprint"], "physical_dag_hash": selected["physical"]["physical_fingerprint"],
@@ -419,7 +547,8 @@ class IPRService:
         return st.plan
 
     # ================================================================ execute
-    def execute(self, request_id: str, *, variant: str | None = None, publish: bool = True, share: bool = True) -> str:
+    def execute(self, request_id: str, *, variant: str | None = None, publish: bool = True, share: bool = True,
+                defer_until: str | None = None, admission_basis: str = "explicit_choice") -> str:
         st = self.requests[request_id]
         rec = st.record
         if not confirmation_matches(rec) or st.plan is None or st.plan["semantic_hash"] != semantic_hash(rec):
@@ -442,14 +571,30 @@ class IPRService:
                                  principal=rec.requester.subject, purpose=rec.requester.purpose, tenant=rec.requester.tenant,
                                  cut=cut_d, access=acc_d,
                                  budget={"execution_target_credits": rec.constraints.execution_target_credits, "publish": publish,
+                                         "statement_timeout_seconds": self.policy["statement_timeout_seconds"],
+                                         "statement_queued_timeout_seconds": self.policy["statement_queued_timeout_seconds"],
+                                         "deadline_epoch": None if defer_until else time.time() + rec.constraints.max_runtime_seconds,
                                          "policy": rec.budget_policy_id, "reserved": self.broker.reserved(ex_id)},
-                                 estimate=est.to_dict(), plan_version=1, share=share)
+                                 estimate=est.to_dict(), plan_version=1, share=share, not_before=defer_until)
         self._exec_ctx[ex_id]["admission"] = adm
         st.executions.append(ex_id)
         self.trace.span(request_id, "admission", execution_id=ex_id, cut_mode=p["cut"].cut_mode, replayable_until=p["cut"].replayable_until,
-                        decision={"variant": cand["variant"], "workflow_id": adm["workflow_id"], "publish": publish},
+                        decision={"variant": cand["variant"], "workflow_id": adm["workflow_id"], "publish": publish,
+                                  "admission_basis": admission_basis, "deferred_until": defer_until},
                         observations={"admission_latency_ms": adm["admission_latency_ms"]})
         return ex_id
+
+    def _node_admission(self, ex_id: str, spec: dict[str, Any]) -> tuple[bool, str]:
+        """Re-authorize before every stage: an entitlement or policy change aborts the remaining stages."""
+        ctx = self._exec_ctx.get(ex_id)
+        if ctx is None:
+            return True, "no in-process context"
+        if self.engine.token_expired(ctx["record"].requester.subject):
+            return True, "delegation expired: the submission path pauses for renewal (no service-principal fallback)"
+        ports = [b["port_ref"] for b in self.requests[ctx["request_id"]].prepared["bindings"]]
+        acc = ctx["access"]
+        return self.access.reauthorize(ctx["record"].requester, ports, {"access_fingerprint": acc.fingerprint,
+                                                                         "access_reuse_mode": "subject_scoped"})
 
     def _stage_cost(self, ex_id: str, spec: dict[str, Any]) -> bool:
         ctx = self._ctx(ex_id)
@@ -464,6 +609,30 @@ class IPRService:
         return self._exec_ctx[ex_id]
 
     # ---------------------------------------------------------------- runtime handlers
+    def _h_python(self, execution: dict, spec: dict, context: dict) -> dict:
+        """Run an approved, digest-pinned Python operator on the validated aggregate (no agent code)."""
+        ctx = self._ctx(execution["execution_id"])
+        op_id = spec["operator_id"]
+        if op_id not in PY_OPERATORS or not verify_digest(op_id, spec["code_digest"]):
+            return {"ok": False, "error": f"python operator {op_id} digest mismatch or not approved"}
+        params = py_validate_params(op_id, spec["params"])
+        rel = context["relations"][spec["final_node"]]
+        sess = self.engine.acquire(execution["principal"], execution["purpose"])
+        try:
+            rows = sess.fetch_all(f"SELECT * FROM {rel}")
+        finally:
+            self.engine.release(sess)
+        out = PY_OPERATORS[op_id]["fn"](rows, params)
+        ctx.setdefault("py_outputs", {})[op_id] = out
+        art = self.settings.artifacts_dir / "python_ops"
+        art.mkdir(parents=True, exist_ok=True)
+        digest = fingerprint(out)
+        (art / f"{execution['execution_id']}_{op_id}.json").write_text(dumps({"rows": out, "operator": py_descriptor(op_id)}))
+        return {"ok": True, "operator_id": op_id, "version": PY_OPERATORS[op_id]["version"], "code_digest": spec["code_digest"],
+                "determinism": PY_OPERATORS[op_id]["determinism"], "tolerance": PY_OPERATORS[op_id]["tolerance"],
+                "runtime": PY_OPERATORS[op_id]["runtime"], "output_digest": digest, "rows": len(out),
+                "artifact_ref": f"artifacts/python_ops/{execution['execution_id']}_{op_id}.json"}
+
     def _h_validate(self, execution: dict, spec: dict, context: dict) -> dict:
         ctx = self._ctx(execution["execution_id"])
         rec = ctx["record"]
@@ -482,6 +651,15 @@ class IPRService:
         for row in self.store.q("SELECT observations_json FROM nodes WHERE execution_id=? AND state='complete'", (execution["execution_id"],)):
             for k, v in ((loads(row["observations_json"]) or {}).get("assertions") or {}).items():
                 verdicts.setdefault(k, v)
+        for row in self.store.q("SELECT node_id, observations_json, spec_json FROM nodes WHERE execution_id=? AND state='complete'",
+                                (execution["execution_id"],)):
+            sp = loads(row["spec_json"])
+            if sp.get("kind") == "python_op":
+                o = loads(row["observations_json"]) or {}
+                verdicts["a.python_operator_digest"] = {
+                    "passed": verify_digest(sp["operator_id"], o.get("code_digest", "")) and o.get("version") == sp["operator_version"],
+                    "value": {"operator": sp["operator_id"], "version": o.get("version"), "code_digest": o.get("code_digest")},
+                    "detail": "approved Python operator pinned by version and code digest"}
         ok = all(v["passed"] for v in verdicts.values())
         ctx["validation"] = verdicts
         ctx["timeline"]["validated"] = time.perf_counter()
@@ -527,6 +705,7 @@ class IPRService:
         rec, recipe = ctx["record"], ctx["recipe"]
         dims = list(rec.intent.dimensions)
         rows = rollup(ctx["rows"], dims)  # normalizes counts and recomputes rates (no-op grouping)
+        rows = self._attach_intervals(rows, dims, ctx.get("py_outputs", {}).get("wilson_interval"))
         facts = answer_facts(rows, dims, origin="fresh_execution",
                              information_set_id=(ctx.get("information_set") or {}).get("information_set_id"),
                              cut=ctx["cut"].to_dict(), intent=rec.intent.model_dump(mode="json"), recipe=recipe)
@@ -534,18 +713,39 @@ class IPRService:
         temporal_ok = all(v.get(k, {"passed": True})["passed"] for k in ("a.no_future_knowledge", "a.window_respected"))
         structural_ok = all(x["passed"] for k, x in v.items() if k not in ("a.no_future_knowledge", "a.window_respected"))
         ctx["presentation"] = {"origin": "fresh_execution", "facts": facts, "chart": chart_spec(facts), "narrative": narrative(facts, recipe),
+                               "agent_narrative": self._narrate(facts, recipe, ctx["request_id"], ex_id),
                                "confidence": confidence_categories(confirmed=True, recipe_status=recipe["status"], cut_mode=ctx["cut"].cut_mode,
                                                                    temporal_ok=temporal_ok, structural_ok=structural_ok)}
         ctx["timeline"]["presented"] = time.perf_counter()
         receipt = self._build_receipt(ex_id)
         ctx["presentation"]["receipt"] = receipt
         self.store.x("INSERT OR REPLACE INTO receipts VALUES (?,?,?)", (ex_id, dumps(receipt), self.clock.now_z()))
+        if ctx["plan"].get("workload_signature"):
+            self.selector.observe(ctx["plan"]["workload_signature"], receipt["actual_plan"]["variant"], receipt["latency"]["total_s"],
+                                  receipt["cost"]["provisional_simulated_credits"], ex_id, self.clock.now_z())
         for n in receipt["nodes"]:
             if n.get("kind") == "sql_ctas" and n.get("observations", {}).get("elapsed_ms") is not None and n.get("estimate_s"):
                 self.calibration.observe(n["operator"], n["estimate_s"], n["observations"]["elapsed_ms"] / 1000)
         self.trace.span(ctx["request_id"], "present", execution_id=ex_id, decision={"origin": "fresh_execution"},
                         output_refs={"result_digest": receipt["result_digest"], "information_set_id": facts["information_set_id"]})
         return {"ok": True, "facts_digest": fingerprint(facts)}
+
+    @staticmethod
+    def _attach_intervals(rows: list[dict[str, Any]], dims: list[str], ci_rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        if not ci_rows:
+            return rows
+        by_key = {tuple(r.get(d) for d in dims): r for r in ci_rows}
+        return [{**r, **{k: by_key.get(tuple(r[d] for d in dims), {}).get(k) for k in ("ci_low", "ci_high", "ci_level")}} for r in rows]
+
+    def _narrate(self, facts: dict[str, Any], recipe: dict[str, Any], request_id: str, execution_id: str | None = None) -> dict[str, Any]:
+        """answer-narrator skill; numbers are checked against validated facts, else deterministic prose is used."""
+        facts_j = loads(dumps(facts))
+        try:
+            r = self.agents.invoke("answer-narrator", {"facts": facts_j, "caveats": caveat_list(facts, recipe), "recipe_title": recipe["title"]},
+                                   guard=narration_guard(facts_j), request_id=request_id, execution_id=execution_id)
+        except RuntimeError as exc:  # presentation degrades to the deterministic narrative; it never fails the run
+            return {"headline": None, "narrative": None, "claims": [], "chart_recommendation": None, "error": str(exc)}
+        return {**r.output, "agent": r.receipt()}
 
     # ---------------------------------------------------------------- receipts
     def _build_receipt(self, ex_id: str) -> dict[str, Any]:
@@ -577,6 +777,8 @@ class IPRService:
                              "compiler_checks": {"edge_check"}, "policies": set(self.registry.policies),
                              "validated": {k: v["passed"] for k, v in ctx.get("validation", {}).items()}})
         sim_credits = round(self.broker.reserved(ex_id), 6)
+        from .insights import collect as collect_insights
+        insights = collect_insights(nodes, status["attempts"], ctx["candidate"].get("explain", {}))
         facts = ctx["presentation"]["facts"]
         return {
             "receipt_kind": "execution", "execution_id": ex_id, "request_id": ctx["request_id"], "workflow_id": ex["workflow_id"],
@@ -600,6 +802,7 @@ class IPRService:
                            "probe_log": stats.get("probe_log")},
             "estimate": ctx["candidate"]["estimate"].to_dict(),
             "latency": {"total_s": round(total, 4), "admission_ms": ctx["admission"]["admission_latency_ms"],
+                        "agent_ms_by_skill": {r["skill"]: r["latency_ms"] for r in self.agents.invocations(request_id=ctx["request_id"])},
                         "first_dispatch_ms": first_dispatch, "validate_to_present_s": round(t.get("presented", 0) - t.get("validated", 0), 4) if t.get("validated") else None},
             "cost": {"reserved_simulated_credits": sim_credits, "provisional_simulated_credits": sim_credits,
                      "attribution": "pending — local engine has no billing source; values are simulated credit-equivalents"},
@@ -615,6 +818,9 @@ class IPRService:
                                    "bounded_verifier": ctx["candidate"]["certificate"]["verification"]["verdict"],
                                    "business_truth": "unverified"},
             "telemetry": {"spill": "unavailable: not observable in local engine", "operator_stats": "collected for completed statements"},
+            "query_insights": insights, "explain": ctx["candidate"].get("explain", {}),
+            "selection": {"reason": ctx["plan"].get("selection_reason"), "learned": ctx["plan"].get("learned_selection")},
+            "child_graphs": phys.get("child_graphs"),
             "note": "A receipt documents evidence; it is not a mathematical proof of business truth.",
         }
 
@@ -633,9 +839,11 @@ class IPRService:
         bind_rows = (obs.get("linked_binds") or {}).get("rows") or 0
         stats = {**ctx["plan"]["stats"], "cohort_rows": cohort_rows, "linked_bind_rows": bind_rows, "uncertainty": 1.2}
         current_suffix = [n for n in physical["nodes"] if n["id"] not in info["completed"]]
+        deviations = {k: (obs.get(k) or {}).get("envelope", {}).get("deviation") for k in ("cohort", "linked_binds")}
+        above = [k for k, v in deviations.items() if v == "above"]
         if physical["variant"] == "staged":
             target_n = cfg["partitions"]
-            trigger = cohort_rows >= cfg["min_cohort_rows"] or cfg["force"]
+            trigger = cohort_rows >= cfg["min_cohort_rows"] or cfg["force"] or (bool(above) and cohort_rows >= cfg["min_cohort_rows"] // 4)
         else:  # partitioned: combine tiny branches
             target_n = 1 if cohort_rows < cfg["min_cohort_rows"] // 10 else physical["n_partitions"]
             trigger = (target_n != physical["n_partitions"]) or cfg["force"]
@@ -657,7 +865,9 @@ class IPRService:
         assert new_plan["logical_fingerprint"] == logical["logical_fingerprint"], "adaptation must preserve confirmed semantics"
         if not cert["admitted"]:
             return None
-        record = {"trigger": "forced" if cfg["force"] else "observed volume outside validity range",
+        record = {"trigger": "forced" if cfg["force"] else ("row-count envelope exceeded at " + ", ".join(above) if above
+                                                           else "observed volume outside validity range"),
+                  "envelope_deviations": deviations,
                   "checkpoint": {"cohort_rows": cohort_rows, "linked_bind_rows": bind_rows,
                                  "validity_range": {"staged_preferred_below_cohort_rows": cfg["min_cohort_rows"]}},
                   "changed_suffix": [n["id"] for n in current_suffix], "new_suffix": [n["id"] for n in new_suffix],
@@ -708,7 +918,11 @@ class IPRService:
             self.plan(rid)
         except Gap as g:
             return {"request_id": rid, "stage": "plan", "status": g.kind, "message": str(g), "detail": g.detail}
-        ex_id = self.execute(rid, variant=variant)
+        decision = self.admission_decision(rid, variant)
+        if not decision["auto_admit"]:
+            return {"request_id": rid, "stage": "estimate", "status": "awaiting_admission", "estimate": decision["estimate"],
+                    "reasons": decision["reasons"]}
+        ex_id = self.execute(rid, variant=variant, admission_basis=decision["basis"])
         if not wait:
             return {"request_id": rid, "stage": "execute", "status": "running", "execution_id": ex_id}
         self.wait(ex_id, timeout)
@@ -776,8 +990,37 @@ class IPRService:
         metrics = compute_metrics(receipt, context)
         gates = gate_vector(receipt, context)
         recs = recommendations(receipt, metrics, gates)
+        rid = ctx["request_id"]
+        metrics_j = loads(dumps(metrics))
+        diag = self.agents.invoke("assessment-diagnostician", {
+            "gates": gates, "metrics": metrics_j, "rule_recommendations": recs, "user_feedback": user_feedback,
+            "deltas": {"proposed_variant": receipt["proposal"]["variant"], "actual_variant": receipt["actual_plan"]["variant"],
+                       "estimated_p90_s": receipt["estimate"]["latency_p90_s"], "actual_s": receipt["latency"]["total_s"],
+                       "adaptations": len(receipt["adaptations"])}},
+            guard=diagnosis_guard(set(metrics) | set(gates)), request_id=rid, execution_id=ex_id)
+        seen = {(r["change_class"], r["recommendation"]) for r in recs}
+        for r in diag.output["recommendations"]:
+            if (r["change_class"], r["recommendation"]) not in seen and r["change_class"] != "none":
+                recs.append({"rank": len(recs) + 1, **r, "source": "assessment-diagnostician"})
+        fb = None
+        if user_feedback:
+            fb = self.agents.invoke("feedback-classifier", {"feedback": user_feedback, "dimensions": ctx["record"].intent.dimensions,
+                                                            "result_origin": receipt["origin"]}, request_id=rid, execution_id=ex_id)
         doc = build_document(receipt, metrics, gates, recs, user_feedback)
+        doc += "\n## Agent diagnosis (advisory)\n\n" + "\n".join(f"- {c['cause']} (evidence: {c['evidence_metric']})"
+                                                                 for c in diag.output["likely_causes"]) + \
+            f"\n\n_{diag.output['rationale']}_ · provider {diag.provider}\n"
+        if fb:
+            doc += (f"\n## Feedback classification (data item)\n\n- change class: {fb.output['change_class']}\n"
+                    f"- scope: {fb.output['scope_dimensions']}\n- requests control bypass: {fb.output['requests_control_bypass']}\n")
         case = new_case(receipt, metrics, gates, recs, user_feedback, ctx["record"].intent.model_dump(mode="json"))
+        case["agent_diagnosis"] = {**diag.output, "agent": diag.receipt()}
+        if fb:
+            case["feedback_classification"] = {**fb.output, "agent": fb.receipt()}
+            if fb.output["requests_control_bypass"]:
+                case["promotion"]["flags"] = ["feedback requested a control bypass; recorded as data, never actioned"]
+            elif fb.output["change_class"] != "none":
+                case["promotion"]["change_class"] = fb.output["change_class"]
         if context.get("oracle_agreement") and not context["oracle_agreement"]["value"]:
             case["counterexample_inputs"] = {"source_cut": receipt["source_cut"]["fingerprint"], "params": ctx["plan"]["logical"]["params"]}
             case["expected_outputs"] = self.run_oracle(ex_id)["rows"]
@@ -789,6 +1032,131 @@ class IPRService:
                                                                     dumps(case), self.clock.now_z()))
         self.trace.span(ctx["request_id"], "assess", execution_id=ex_id, decision={"case_id": case["case_id"], "gates": gates})
         return {"case": case, "document": doc, "path": str(folder)}
+
+    # ================================================================ preferences, paging, export
+    def set_preferences(self, subject: str, prefs: dict[str, Any]) -> None:
+        """Preferences can authorize later execution admissions within a configured envelope (section 2)."""
+        allowed = {"auto_admit", "max_credits", "max_latency_s"}
+        clean = {k: v for k, v in prefs.items() if k in allowed}
+        self.store.x("INSERT OR REPLACE INTO preferences VALUES (?,?,?)", (subject, dumps(clean), self.clock.now_z()))
+
+    def preferences(self, subject: str) -> dict[str, Any]:
+        row = self.store.one("SELECT prefs_json FROM preferences WHERE subject=?", (subject,))
+        return loads(row["prefs_json"]) if row else {"auto_admit": True}
+
+    def admission_decision(self, request_id: str, variant: str | None = None) -> dict[str, Any]:
+        st = self.requests[request_id]
+        cand = st.plan["selected"] if variant is None else next(c for c in st.plan["candidates"] if c["variant"] == variant)
+        est = cand["estimate"]
+        prefs = self.preferences(st.record.requester.subject)
+        reasons = []
+        if not prefs.get("auto_admit", True):
+            reasons.append("preferences require an explicit execution choice")
+        if prefs.get("max_credits") is not None and est.credits_high > prefs["max_credits"]:
+            reasons.append(f"estimated credits_high {est.credits_high} exceeds preference {prefs['max_credits']}")
+        if prefs.get("max_latency_s") is not None and est.latency_p90_s > prefs["max_latency_s"]:
+            reasons.append(f"estimated p90 latency {est.latency_p90_s}s exceeds preference {prefs['max_latency_s']}s")
+        return {"auto_admit": not reasons, "basis": "preference_envelope" if not reasons else "explicit_choice_required",
+                "reasons": reasons, "estimate": est.to_dict(), "preferences": prefs}
+
+    def _result_relation(self, ex_id: str, requester: Requester | dict) -> tuple[str, Requester]:
+        requester = requester if isinstance(requester, Requester) else Requester(**requester)
+        ctx = self._ctx(ex_id)
+        rel = (ctx.get("information_set") or {}).get("relation_ref")
+        if not rel:
+            raise Gap("no_relation", "execution has no retained result relation")
+        ports = [b["port_ref"] for b in self.requests[ctx["request_id"]].prepared["bindings"]]
+        manifest = ctx["information_set"]
+        ok, why = self.access.reauthorize(requester, ports, manifest)
+        if not ok:
+            raise Gap("access_denied", f"re-authorization failed for result read: {why}")
+        return rel, requester
+
+    def page_result(self, ex_id: str, requester: Requester | dict, page: int = 0, size: int = 50) -> dict[str, Any]:
+        """Paginated extract of the governed result relation; every read re-authorizes."""
+        rel, req = self._result_relation(ex_id, requester)
+        size = max(1, min(int(size), 1000))
+        sess = self.engine.acquire(req.subject, req.purpose)
+        try:
+            total = sess.fetch_all(f"SELECT COUNT(*) AS n FROM {rel}")[0]["n"]
+            rows = sess.fetch_all(f"SELECT * FROM {rel} ORDER BY 1, 2 LIMIT :lim OFFSET :off", {"lim": size, "off": page * size})
+        finally:
+            self.engine.release(sess)
+        return {"rows": rows, "page": page, "size": size, "total": total, "next_page": page + 1 if (page + 1) * size < total else None}
+
+    def export_result(self, ex_id: str, requester: Requester | dict) -> dict[str, Any]:
+        """Governed file-handle export (CSV + manifest) instead of an in-memory frame."""
+        import csv
+        rel, req = self._result_relation(ex_id, requester)
+        ctx = self._ctx(ex_id)
+        export_id = "exp_" + uuid.uuid4().hex[:10]
+        folder = self.settings.artifacts_dir / "exports"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{export_id}.csv"
+        n, page = 0, 0
+        with open(path, "w", newline="") as fh:
+            writer = None
+            while True:
+                chunk = self.page_result(ex_id, req, page, 500)
+                for r in chunk["rows"]:
+                    if writer is None:
+                        writer = csv.DictWriter(fh, fieldnames=list(r))
+                        writer.writeheader()
+                    writer.writerow(r)
+                    n += 1
+                if chunk["next_page"] is None:
+                    break
+                page = chunk["next_page"]
+        manifest = {"export_id": export_id, "execution_id": ex_id, "information_set_id": ctx["information_set"]["information_set_id"],
+                    "subject": req.subject, "access_fingerprint": ctx["access"].fingerprint, "rows": n,
+                    "file_sha256": __import__("hashlib").sha256(path.read_bytes()).hexdigest(), "created_at": self.clock.now_z(),
+                    "classification": "governed export; re-authorized at creation; inherits the information set's coverage contract"}
+        self.store.x("INSERT INTO exports VALUES (?,?,?,?,?,?)", (export_id, ex_id, req.subject, str(path), dumps(manifest), self.clock.now_z()))
+        self.trace.span(ctx["request_id"], "export", execution_id=ex_id, decision={"export_id": export_id, "rows": n})
+        return {"path": str(path), "manifest": manifest}
+
+    # ================================================================ recipe builder
+    def draft_recipe_answers(self, logic: str, examples: list[str] | None = None) -> dict[str, Any]:
+        """recipe-drafter skill: proposed answers that pre-fill the builder form (never certifies)."""
+        from .recipe_builder import QUESTIONS
+        qs = [{"id": q["id"], "question": q["question"], "options": q["options"]} for q in QUESTIONS]
+        r = self.agents.invoke("recipe-drafter", {"logic": logic, "examples": examples or [], "questions": qs},
+                               guard=drafter_guard({q["id"]: list(q["options"]) for q in QUESTIONS}))
+        return {**r.output, "agent": r.receipt()}
+
+    def build_recipe_draft(self, logic: str, answers: dict[str, str], *, title: str, owner: str,
+                           agent_proposal: dict[str, Any] | None = None, **kw) -> dict[str, Any]:
+        d = self.builder.build_draft(logic, answers, title=title, owner=owner, **kw)
+        if agent_proposal:
+            d["agent_proposal"] = agent_proposal
+            d["user_overrides"] = {a["question_id"]: answers.get(a["question_id"]) for a in agent_proposal["answers"]
+                                   if answers.get(a["question_id"]) != a["option"]}
+            Path(d["draft_ref"]).write_text(dumps(d))
+        return d
+
+    def shadow_evaluate(self, case_id: str) -> dict[str, Any]:
+        """Run every admitted variant in shadow (no publication) on the producer's exact cut, compare receipts
+        with the original, record regression results and move the case to 'evaluated' (section 17)."""
+        case = self.feedback.load(case_id)
+        ex_id = case["execution_id"]
+        base_rows = self._ctx(ex_id)["rows"]
+        dims = list(self._ctx(ex_id)["record"].intent.dimensions)
+        results = []
+        for v in ("fused", "staged", "partitioned"):
+            rid = self.replay(ex_id, v)
+            self.wait(rid)
+            rc = self._ctx(rid)
+            rec = self.store.one("SELECT receipt_json FROM receipts WHERE execution_id=?", (rid,))
+            r = loads(rec["receipt_json"]) if rec else {}
+            results.append({"variant": v, "execution_id": rid,
+                            "equivalent": compare_results(base_rows, rc.get("rows", []), dims)["equivalent"] if rc.get("rows") else None,
+                            "latency_s": (r.get("latency") or {}).get("total_s")})
+        case["regression_results"] = {"mode": "shadow", "baseline_execution": ex_id, "runs": results,
+                                      "all_equivalent": all(x["equivalent"] for x in results)}
+        self.feedback.save(case)
+        if case["promotion"]["state"] == "proposed":
+            self.feedback.transition(case_id, "evaluated", "shadow-evaluator", "shadow replays compared with the baseline receipt")
+        return case["regression_results"]
 
     # ================================================================ misc
     def monitoring(self) -> dict[str, Any]:

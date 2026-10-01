@@ -1,0 +1,31 @@
+{
+  "registry_version": "semantic-graph/2026-10-01.1",
+  "note": "Versioned semantic graph of metrics, entities, relationships and source mappings (spec section 5). An incorrect graph is not made authoritative by being encoded here; it is reviewed and regression-tested like recipes.",
+  "entities": {
+    "submission_opportunity": {"key": "submission_opportunity_id", "description": "Canonical quote opportunity; counted once across PolicyPeriod branches"},
+    "quote_branch": {"key": "quote_branch_id", "description": "PolicyPeriod branch / job version carrying a quote"},
+    "bind_event": {"key": "bind_event_id", "description": "Bind transaction on a quote branch"},
+    "policy": {"key": "policy_id", "description": "Issued policy"},
+    "driver": {"key": "driver_id", "description": "Driver on a policy"},
+    "household": {"key": "household_id", "description": "Customer household"}
+  },
+  "relationships": [
+    {"from": "quote_branch", "to": "submission_opportunity", "cardinality": "many_to_one", "via": "quote_fdp/quoted_opportunities_v2.submission_opportunity_id", "certified": true},
+    {"from": "bind_event", "to": "quote_branch", "cardinality": "many_to_one", "via": "policy_fdp/known_bind_events_v2.quote_branch_id", "certified": true},
+    {"from": "driver", "to": "policy", "cardinality": "many_to_one", "via": null, "certified": false},
+    {"from": "policy", "to": "household", "cardinality": "many_to_one", "via": null, "certified": false}
+  ],
+  "attributes": {
+    "product_version": {"entity": "quote_branch", "mapping": {"port": "quote_fdp/quoted_opportunities_v2", "column": "product_version", "contract_version": "2"}, "attribution": "first_eligible_quoted_branch"},
+    "channel": {"entity": "quote_branch", "mapping": {"port": "quote_fdp/quoted_opportunities_v2", "column": "channel", "contract_version": "2"}, "attribution": "first_eligible_quoted_branch"},
+    "state": {"entity": "quote_branch", "mapping": {"port": "quote_fdp/quoted_opportunities_v2", "column": "state", "contract_version": "2"}, "attribution": "scope_filter"},
+    "lob": {"entity": "quote_branch", "mapping": {"port": "quote_fdp/quoted_opportunities_v2", "column": "lob", "contract_version": "2"}, "attribution": "scope_filter"},
+    "driver_age": {"entity": "driver", "mapping": null, "attribution": null},
+    "household": {"entity": "household", "mapping": null, "attribution": null},
+    "territory": {"entity": "quote_branch", "mapping": null, "attribution": null}
+  },
+  "metrics": {
+    "gross_submission_quote_conversion": {"unit_entity": "submission_opportunity", "event_entity": "bind_event", "recipe": "gross_submission_quote_conversion@2.0.0"},
+    "quote_conversion": {"unit_entity": "quote_branch", "event_entity": "bind_event", "recipe": "quote_conversion@1.0.0"}
+  }
+}

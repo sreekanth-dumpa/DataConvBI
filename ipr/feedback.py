@@ -63,6 +63,22 @@ class FeedbackDirectory:
         self.save(case)
         return case
 
+    def retire_stale(self, compiler_version: str, registry_versions: dict[str, str]) -> list[str]:
+        """Decay: physical-plan advice is superseded when the compiler or registries it was measured under change."""
+        retired = []
+        for c in self.all():
+            if c["promotion"]["state"] not in ("approved", "active"):
+                continue
+            v = c.get("versions") or {}
+            if c["promotion"].get("change_class") in ("physical_plan", "none", "presentation") and v and (
+                    v.get("compiler") != compiler_version or v.get("registries") != registry_versions):
+                c["promotion"]["state"] = "superseded"
+                c["promotion"].setdefault("history", []).append({"to": "superseded", "actor": "decay",
+                                                                 "note": "compiler or registry versions changed"})
+                self.save(c)
+                retired.append(c["case_id"])
+        return retired
+
     def retrieve(self, recipe_id: str, domains: list[str], scope: dict[str, Any]) -> list[dict[str, Any]]:
         """Return approved/active advisory cases applicable to this request only."""
         out = []

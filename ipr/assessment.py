@@ -163,6 +163,7 @@ def new_case(receipt: dict[str, Any], metrics: dict[str, Any], gates: dict[str, 
         "trace_refs": {"trace_id": f"trace_{receipt['request_id']}", "receipt": f"receipts/{receipt['execution_id']}.json"},
         "counterexample_inputs": None, "expected_outputs": None, "proposed_patch": None, "regression_results": None,
         "owner": "pricing_analytics",
+        "versions": receipt.get("versions", {}),
         "promotion": {"state": "proposed", "change_class": change_class, "advisory_only": True, "history": [],
                       "independent_regression_passed": False},
     }

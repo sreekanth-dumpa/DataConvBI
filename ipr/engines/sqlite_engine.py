@@ -83,6 +83,7 @@ class SQLiteSession:
         self._lock = threading.Lock()
         self.query_tag = ""
         self._running: dict[str, threading.Thread] = {}
+        self._cancelled: set[str] = set()
 
     # -- session settings ------------------------------------------------
     def set_query_tag(self, tag: str) -> None:
@@ -152,6 +153,8 @@ class SQLiteSession:
                         delay = max(delay, secs)
                 if delay:
                     time.sleep(delay)
+                if query_id in self._cancelled:
+                    raise sqlite3.OperationalError("interrupted")
                 for frag in faults.get("fail", []):
                     if _matches(frag, tag):
                         raise EngineError(f"injected failure for {frag}")
@@ -192,6 +195,7 @@ class SQLiteSession:
     def cancel(self, query_id: str) -> None:
         rec = self.engine.query_record(query_id)
         if rec.status == "RUNNING":
+            self._cancelled.add(query_id)
             self._con.interrupt()
 
     def wait(self, query_id: str, timeout: float = 600) -> QueryRecord:

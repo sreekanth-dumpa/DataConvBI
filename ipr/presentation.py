@@ -24,7 +24,8 @@ def answer_facts(rows: list[dict[str, Any]], dims: list[str], *, origin: str, in
         by_dim.append({**{d: r[d] for d in dims}, "eligible_all": ea, "eligible_mature": int(r["eligible_mature"]),
                        "immature": int(r["immature"]), "quality_excluded": int(r["quality_excluded"]), "converted": int(r["converted"]),
                        "conversion_rate": _rate(int(r["converted"]), int(r["eligible_mature"])),
-                       "immature_rate": _rate(int(r["immature"]), ea), "quality_excluded_rate": _rate(int(r["quality_excluded"]), ea)})
+                       "immature_rate": _rate(int(r["immature"]), ea), "quality_excluded_rate": _rate(int(r["quality_excluded"]), ea),
+                       **({"ci_low": r["ci_low"], "ci_high": r["ci_high"], "ci_level": r["ci_level"]} if r.get("ci_level") else {})})
     imm_rates = [x["immature_rate"] for x in by_dim if x["immature_rate"] is not None]
     return {
         "metric": recipe["id"], "recipe_version": recipe["version"], "population": intent.get("population"),
@@ -91,7 +92,8 @@ def narrative(facts: dict[str, Any], recipe: dict[str, Any]) -> str:
     ]
     for r in facts["by_dimension"]:
         label = " / ".join(str(r[d]) for d in facts["dimensions"]) or "All"
-        lines.append(f"- {label}: {pct(r['conversion_rate'])} ({r['converted']:,}/{r['eligible_mature']:,} mature); "
+        ci = (f" [{r['ci_level']:.0%} CI {pct(r['ci_low'])}–{pct(r['ci_high'])}]" if r.get("ci_level") and r.get("ci_low") is not None else "")
+        lines.append(f"- {label}: {pct(r['conversion_rate'])}{ci} ({r['converted']:,}/{r['eligible_mature']:,} mature); "
                      f"immature {pct(r['immature_rate'])}, quality-excluded {pct(r['quality_excluded_rate'])}.")
     caveats = caveat_list(facts, recipe)
     return "\n".join(lines + ["", "Caveats:"] + [f"- {c}" for c in caveats])

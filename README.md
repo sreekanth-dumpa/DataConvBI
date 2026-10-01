@@ -9,8 +9,38 @@ population, cohort, cutoff and dimensions. It runs on a synthetic fixture.
 pip install -r requirements.txt
 python -m ipr demo --compare-variants   # full workflow once, plus assessment
 streamlit run app.py                    # UI: Ask / Execution / Plan / Cache / Assess / Recipe builder / Monitoring / Trace
-python -m pytest                        # 55 tests (oracle, variants, cache safety, recovery, UI)
+python -m pytest                        # oracle, variants, agents, cache safety, recovery, UI
 ```
+
+## Agent skills (LLM)
+
+The spec's agent roles are ten versioned skills in `ipr/agents/skills/<name>/SKILL.md`. Each file holds the
+prompt, an output JSON schema and an authority boundary ("may" / "may not"). The skills are
+`intent-interpreter`, `recipe-nominator`, `clarification-writer`, `obligation-proposer`, `plan-proposer`,
+`probe-advisor`, `answer-narrator`, `assessment-diagnostician`, `feedback-classifier` and `recipe-drafter`.
+
+`AgentRunner` calls a skill through a provider:
+
+| Provider | When it is used |
+|---|---|
+| Claude | `IPR_LLM_PROVIDER=claude` plus `ANTHROPIC_API_KEY`. Uses structured JSON output and server-side refusal fallback. |
+| Snowflake Cortex | Adapter only; not integration-tested. |
+| Offline deterministic engine | The default when no credentials are set. |
+| Replay | Returns frozen proposals recorded earlier. |
+
+The runner validates every output against the skill's schema, then applies a deterministic guard. Examples
+of what the guards enforce:
+
+* numeric claims must trace to validated facts;
+* a plan proposal may not change the certified operator path;
+* obligations can only be added, never removed;
+* feedback asking to bypass access is flagged and never acted on.
+
+If an output fails either check, the runner falls back to the offline engine and records why. Each call
+leaves an invocation receipt with prompt, context and response hashes, plus a trace span. The UI's
+**Agent skills** tab shows the catalog, prompts, schemas and receipts, and runs a proposal-stability check.
+
+See `docs/SPEC_COVERAGE.md` for a section-by-section map of the spec to code, tests and status.
 
 The central invariant: the same confirmed meaning, bound parameters, source
 cut, access decision and recipe versions produce equivalent information across
@@ -22,7 +52,7 @@ hand-labeled edge cases.
 
 | Phase | What happens | Code |
 |---|---|---|
-| Interpret | Rule-based draft intent. An optional Claude proposer (`IPR_LLM=claude`) also works; its output is restricted to a field whitelist and it falls back to the rules on error. Writes an interpretation receipt. | `intent.py`, `llm.py` |
+| Interpret | The `intent-interpreter` skill proposes a draft intent. Writes an interpretation receipt. | `intent.py`, `agents/` |
 | Ground | Route by alias or pattern, then hard applicability rules. Semantic search only nominates candidates; they must pass the same rules. Binds recipe definitions, asks material questions, derives **Pass A** obligations and picks evidence by greedy set cover. Reads metadata only. | `grounding.py`, `obligations.py`, `catalog/*.json` |
 | Clarify / confirm | Confirmation binds to an RFC 8785 JCS + SHA-256 hash of the typed, normalized semantic payload. Any semantic edit invalidates it. | `canonical.py`, `intent.py`, `service.confirm` |
 | Retrieve & resolve | Authorized product ports. Requester-scoped access (ADR-01). Source cut is the last complete publication whose watermark covers the cutoff; the cut fails temporal admission when none does. | `cuts.py`, `access.py` |
@@ -49,5 +79,6 @@ hand-labeled edge cases.
 * Delegated identity is simulated: tokens can expire and the runtime pauses with no service-principal fallback. There is no OAuth integration.
 * Profiling probes run as exact queries on the fixture. Live estimates and EXPLAIN-based estimates are not implemented.
 * VeriEQL is an adapter that reports `unsupported`. TLP is implemented for projection/filter queries only.
+* Heavy-key isolation and promotion of hot intermediates are not compiled. Heavy hitters are measured and reported.
 * Execution context lives in memory, so recovery across a *process* restart is limited to durable admission and the outbox (tested). It does not cover handler state.
 * Performance numbers come from the fixture and say nothing about scale. Adaptation payoff and plan regret are reported only when they were actually measured.
